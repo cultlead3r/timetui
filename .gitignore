@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+.DS_Store
+snapshot_report.html
+
+# Local/personal branding — keep real company config & logos out of the repo.
+# (config.example.toml and the logo.svg placeholder ARE committed.)
+/config.toml
+/logo-printer.svg
+*-Logo.txt
+*.bak

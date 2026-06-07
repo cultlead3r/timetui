@@ -1,0 +1,56 @@
+# timetui branding / report configuration — EXAMPLE
+#
+# Copy this file to ~/.config/timetui/config.toml (or point $TIMETUI_CONFIG at
+# any path; $XDG_CONFIG_HOME is honored) and edit the values to put your own
+# brand on exported reports/invoices. Every key is optional — anything you omit
+# falls back to a neutral default, so with no config at all you simply get a
+# generic "YourCompany" header (with the bundled placeholder SVG logo) and
+# no payment block.
+
+# Time Warrior database directory (sets TIMEWARRIORDB for the timew subprocess).
+# Omit to use your default database, or override per-launch with --timew-dir.
+# ~ is expanded; a missing directory is created on startup (timew then sets up a
+# fresh database inside it).
+# [timew]
+# db_path = "~/.local/share/timewarrior"
+
+[brand]
+# Name shown in the invoice header and the plain-text invoice.
+company = "YourCompany"
+
+# Slogan printed vertically down the side of the HTML/PDF invoice.
+# Omit (or comment out) to use the bundled placeholder; set to "" to hide it.
+tagline = "We don't provide a service. We provide a result."
+
+# Currency label for the optional "Amount Due" row.
+currency = "USD"
+
+# Bitcoin address for the payment block + QR code.
+# Omit (or comment out) to use the bundled placeholder; set to "" to hide the
+# payment section entirely (no QR, no copy-to-clipboard).
+btc_address = ""
+
+# Path to an SVG logo. Relative paths resolve next to THIS config file (so
+# dropping the SVG alongside config.toml in ~/.config/timetui/ just works).
+# Omit (or leave commented) to use the bundled open-source placeholder; set to
+# an empty string to render the company name as styled text instead.
+#
+# logo_svg_path is the DARK-theme (cyberpunk) logo: the report shows it with its
+# own colors on the dark sheet. On the printer (light) theme, if you do NOT set a
+# dedicated printer logo (below), this same SVG is reused and any shapes tagged
+# with the "cls-1" / "cls-2" CSS classes are recolored to the printer accent so a
+# light-on-dark logo stays legible on white. Tag your shapes with those classes
+# (and keep them from overlapping) for a clean fallback — see the bundled
+# src/timetui/logo.svg for a working example.
+# logo_svg_path = "logo.svg"
+
+# OPTIONAL: a dedicated logo for the printer (light) theme — typically a
+# dark-on-light version of your mark. When set it is shown with its OWN colors
+# (no recolor), so design it to read on white. Relative paths resolve next to
+# this file, just like logo_svg_path.
+# logo_svg_path_printer = "logo-printer.svg"
+
+# Alternatively, inline the SVG markup directly. A readable *_path wins over the
+# matching inline value if both are set.
+# logo_svg = """<svg xmlns="http://www.w3.org/2000/svg" ...>...</svg>"""
+# logo_svg_printer = """<svg ...>...</svg>"""

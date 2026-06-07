@@ -1,0 +1,202 @@
+/* timetui stylesheet */
+
+#search {
+    height: 3;
+    margin: 0 1;
+    border: round $accent;
+    border-title-align: left;
+    border-title-color: $accent;
+}
+
+#body {
+    height: 1fr;
+}
+
+#table {
+    width: 3fr;
+    height: 100%;
+}
+
+#sidebar {
+    width: 38;
+    height: 100%;
+    padding: 0 1;
+    background: $panel;
+}
+
+#detail {
+    width: 100%;
+    height: auto;
+    border: round $primary;
+    border-title-align: left;
+    border-title-color: $primary;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+#breakdown {
+    width: 100%;
+    height: auto;
+    border: round $primary;
+    border-title-align: left;
+    border-title-color: $primary;
+    padding: 0 1;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+    background: $boost;
+    color: $foreground;
+}
+
+DataTable {
+    height: 100%;
+    background: $surface;
+}
+
+#table > .datatable--header {
+    background: $panel;
+    color: $secondary;
+    text-style: bold;
+}
+
+#table > .datatable--cursor {
+    background: $accent 30%;
+    color: $foreground;
+    text-style: bold;
+}
+
+#table > .datatable--header-hover {
+    background: $panel;
+    color: $secondary;
+}
+
+/* ----- modal dialogs ----- */
+ModalScreen {
+    align: center middle;
+}
+
+#dialog {
+    width: 64;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    border: thick $accent;
+    background: $surface;
+}
+
+.dialog-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+/* ----- text invoice preview modal ----- */
+#text-dialog {
+    width: 86;
+    max-width: 98%;
+    height: auto;
+    max-height: 92%;
+    padding: 1 2;
+    border: thick $accent;
+    background: $surface;
+}
+
+#text-report {
+    width: 100%;
+    height: auto;
+    max-height: 34;
+    margin-bottom: 1;
+    padding: 0 1;
+    border: round $primary;
+    background: $panel;
+}
+
+#text-report-body {
+    width: auto;
+    color: $foreground;
+}
+
+#dialog-question {
+    margin-bottom: 1;
+}
+
+#dialog Input {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#dialog RadioSet {
+    width: 100%;
+    background: $surface;
+    border: round $primary;
+}
+
+#report-choices {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#report-choices .report-col {
+    width: 1fr;
+    height: auto;
+    padding-right: 2;
+}
+
+#dialog Checkbox {
+    width: 100%;
+    margin-bottom: 1;
+    background: $surface;
+    border: none;
+}
+
+#dialog Label {
+    color: $text-muted;
+}
+
+#tag-list {
+    height: auto;
+    max-height: 12;
+    margin-bottom: 1;
+    border: round $primary;
+    background: $surface;
+}
+
+.dialog-buttons {
+    height: auto;
+    align-horizontal: right;
+}
+
+.dialog-buttons Button {
+    margin-left: 2;
+}
+
+.hint {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+.error {
+    color: $error;
+    height: auto;
+}
+
+#help-body {
+    height: auto;
+    margin-bottom: 1;
+}
+
+/* ----- one-time PDF-engine (Chromium) download modal ----- */
+#dl-status {
+    margin-bottom: 1;
+}
+
+#dl-bar {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#dl-bar Bar {
+    width: 1fr;
+}
