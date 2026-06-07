@@ -1,3 +1,5 @@
+https://github.com/user-attachments/assets/64a79a1c-59c0-40bb-ab9d-f0a238592e4e
+
 # timetui
 
 A pretty, billing-focused TUI for [Time Warrior](https://timewarrior.net),
