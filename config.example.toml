@@ -35,22 +35,21 @@ btc_address = ""
 # Omit (or leave commented) to use the bundled open-source placeholder; set to
 # an empty string to render the company name as styled text instead.
 #
-# logo_svg_path is the DARK-theme (cyberpunk) logo: the report shows it with its
-# own colors on the dark sheet. On the printer (light) theme, if you do NOT set a
-# dedicated printer logo (below), this same SVG is reused and any shapes tagged
-# with the "cls-1" / "cls-2" CSS classes are recolored to the printer accent so a
-# light-on-dark logo stays legible on white. Tag your shapes with those classes
-# (and keep them from overlapping) for a clean fallback — see the bundled
-# src/timetui/logo.svg for a working example.
+# Provide a single WHITE logo and the report recolors it per theme. Tag your
+# shapes with the semantic CSS classes "primary" / "secondary" / "accent" (or the
+# Illustrator-export aliases "cls-1" / "cls-2" / "cls-3", which map to the same
+# roles); each theme retints those roles to its palette — cyberpunk to white /
+# cyan / neon, printer to blue / navy / light-blue — so one master reads on both
+# the dark and light sheets. Untagged shapes keep their own color; keep tagged
+# shapes from overlapping so nothing vanishes once they share a color. See the
+# bundled src/timetui/logo.svg for a working example.
 # logo_svg_path = "logo.svg"
 
-# OPTIONAL: a dedicated logo for the printer (light) theme — typically a
-# dark-on-light version of your mark. When set it is shown with its OWN colors
-# (no recolor), so design it to read on white. Relative paths resolve next to
-# this file, just like logo_svg_path.
-# logo_svg_path_printer = "logo-printer.svg"
+# Set logo_recolor = false to skip the per-theme recolor and show the logo with
+# its OWN colors on every theme (handy when your mark is already colored to taste
+# and reads on both dark and light backgrounds). Defaults to true.
+# logo_recolor = true
 
-# Alternatively, inline the SVG markup directly. A readable *_path wins over the
-# matching inline value if both are set.
+# Alternatively, inline the SVG markup directly. A readable logo_svg_path wins
+# over an inline logo_svg if both are set.
 # logo_svg = """<svg xmlns="http://www.w3.org/2000/svg" ...>...</svg>"""
-# logo_svg_printer = """<svg ...>...</svg>"""

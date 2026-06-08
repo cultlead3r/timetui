@@ -85,10 +85,13 @@ class BrandConfig:
       The dataclass default is :data:`PLACEHOLDER_LOGO_SVG` (the bundled
       open-source mark), so a fresh install with no config still shows a real
       logo; explicitly pass ``logo_svg=""`` to opt into the text fallback.
-    * ``logo_svg_printer`` is an optional light-background logo for the printer
-      theme. When set it is shown **with its own colors** (the printer recolor is
-      skipped); when empty the printer theme falls back to ``logo_svg`` recolored
-      to the printer accent. ``logo_svg`` is the dark-theme (cyberpunk) logo.
+    * ``logo_recolor`` (default ``True``) recolors the logo per theme: shapes
+      tagged with the semantic CSS classes ``primary`` / ``secondary`` / ``accent``
+      (or the Illustrator-export aliases ``cls-1`` / ``cls-2`` / ``cls-3``) are
+      retinted to the theme palette, so a single **white** master logo reads on
+      both the dark (cyberpunk) and light (printer) sheets; untagged shapes keep
+      their own color. Set ``logo_recolor=False`` to show the logo with its own
+      colors on every theme.
     """
 
     company: str = "YourCompany"
@@ -96,7 +99,7 @@ class BrandConfig:
     currency: str = "USD"
     btc_address: str = "bc1meowbtwifyouevencare"
     logo_svg: str = PLACEHOLDER_LOGO_SVG
-    logo_svg_printer: str = ""
+    logo_recolor: bool = True
 
 
 # Neutral defaults used when the user has no config file (the open-source default).
@@ -200,6 +203,17 @@ CYBERPUNK_STYLES = """
         letter-spacing: 2px;
         color: #00ffff;
     }
+    /* Recolor hooks: a single white master logo is retinted per theme. Shapes
+       tagged primary/secondary/accent (or the Illustrator aliases cls-1/cls-2/
+       cls-3) are forced to the theme palette; !important beats inline `fill:` so
+       a logo using inline styles still recolors, and untagged shapes keep their
+       own color. Only applied when the logo carries the `recolor` class. */
+    .logo.recolor svg .primary,
+    .logo.recolor svg .cls-1 { fill: #ffffff !important; }
+    .logo.recolor svg .secondary,
+    .logo.recolor svg .cls-2 { fill: #00cccc !important; }
+    .logo.recolor svg .accent,
+    .logo.recolor svg .cls-3 { fill: #00ffff !important; }
     .payment {
         margin-top: 40px;
         padding-top: 20px;
@@ -322,13 +336,17 @@ PRINTER_STYLES = """
         letter-spacing: 2px;
         color: #005a9e;
     }
-    /* A single (dark-theme) logo is recolored to the printer accent so it stays
-       legible on white. A dedicated `logo_svg_printer` keeps its own colors and
-       is rendered without the `recolor` class. */
-    .logo.recolor svg .cls-1,
-    .logo.recolor svg .cls-2 {
-        fill: #005a9e;
-    }
+    /* Recolor hooks: the white master logo is retinted to the printer palette so
+       it stays legible on white. Shapes tagged primary/secondary/accent (or the
+       Illustrator aliases cls-1/cls-2/cls-3) are forced to the theme colors;
+       !important beats inline `fill:`, and untagged shapes keep their own color.
+       Skipped when `logo_recolor=false` (no `recolor` class -> own colors). */
+    .logo.recolor svg .primary,
+    .logo.recolor svg .cls-1 { fill: #005a9e !important; }
+    .logo.recolor svg .secondary,
+    .logo.recolor svg .cls-2 { fill: #000e3f !important; }
+    .logo.recolor svg .accent,
+    .logo.recolor svg .cls-3 { fill: #2a7fc0 !important; }
     .payment {
         margin-top: 40px;
         padding-top: 20px;
@@ -786,15 +804,14 @@ def render_report_html(
         if brand.tagline
         else ""
     )
-    # Logo selection. The printer theme prefers a dedicated light-background logo
-    # (shown with its own colors); a lone dark-theme logo gets the `recolor` class
-    # so the printer CSS retints it to the accent. No logo -> styled company text.
-    if style == "printer" and brand.logo_svg_printer:
-        logo_html = brand.logo_svg_printer
-        logo_class = "logo"
-    elif brand.logo_svg:
+    # Logo selection. A configured SVG gets the `recolor` class when
+    # `logo_recolor` is set (the default), so the per-theme CSS retints its
+    # primary/secondary/accent (or cls-1/2/3) shapes from a white master; with
+    # `logo_recolor=False` it is shown with its own colors. No logo -> styled
+    # company text.
+    if brand.logo_svg:
         logo_html = brand.logo_svg
-        logo_class = "logo recolor"
+        logo_class = "logo recolor" if brand.logo_recolor else "logo"
     else:
         logo_html = f'<span class="logo-text">{html.escape(brand.company, quote=False)}</span>'
         logo_class = "logo"
@@ -1056,10 +1073,10 @@ def load_brand_config(path: str | Path | None = None) -> BrandConfig:
     report generation never crashes on a bad config. ``path`` overrides the
     default location (used by tests); otherwise see :func:`_config_path`.
 
-    The ``[brand]`` table maps onto :class:`BrandConfig`. ``logo_svg_path`` /
-    ``logo_svg_path_printer`` are read into ``logo_svg`` / ``logo_svg_printer``
-    (relative paths resolve next to the config file); an inline ``logo_svg`` /
-    ``logo_svg_printer`` is used only when no readable path is given.
+    The ``[brand]`` table maps onto :class:`BrandConfig`. ``logo_svg_path`` is read
+    into ``logo_svg`` (relative paths resolve next to the config file); an inline
+    ``logo_svg`` is used only when no readable path is given. ``logo_recolor``
+    (bool, default ``True``) toggles the per-theme recolor of the logo.
     """
     import tomllib
 
@@ -1093,7 +1110,7 @@ def load_brand_config(path: str | Path | None = None) -> BrandConfig:
         currency=str(brand.get("currency", DEFAULT_BRAND.currency)),
         btc_address=str(brand.get("btc_address", DEFAULT_BRAND.btc_address)),
         logo_svg=_logo("logo_svg", "logo_svg_path") or PLACEHOLDER_LOGO_SVG,
-        logo_svg_printer=_logo("logo_svg_printer", "logo_svg_path_printer"),
+        logo_recolor=bool(brand.get("logo_recolor", DEFAULT_BRAND.logo_recolor)),
     )
 
 

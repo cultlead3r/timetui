@@ -161,19 +161,19 @@ with `logo_svg = """<svg ...>"""`. Omit the key entirely to ship with the bundle
 [placeholder logo](src/timetui/logo.svg); set `logo_svg = ""` to render the
 company name as styled text instead.
 
-`logo_svg_path` is the **dark-theme** (cyberpunk) logo, shown with its own
-colors. For the **printer** (light) theme you have two choices:
+Provide a single **white** logo and the report recolors it per theme. Tag your
+shapes with the semantic CSS classes `primary` / `secondary` / `accent` (or the
+Illustrator-export aliases `cls-1` / `cls-2` / `cls-3`, which map to the same
+roles); each theme retints those roles to its palette — cyberpunk to white /
+cyan / neon, printer to blue (`#005a9e`) / navy / light-blue — so one master
+reads on both the dark and light sheets. Untagged shapes keep their own color,
+and overlapping tagged shapes are best avoided so nothing vanishes once they
+share a color (see the bundled [`src/timetui/logo.svg`](src/timetui/logo.svg)
+for a working example).
 
-- **Best:** set `logo_svg_path_printer` to a dedicated dark-on-light version of
-  your mark — it's shown with its **own** colors (no recolor), so design it to
-  read on white. The printer theme's accent is blue (`#005a9e`); a logo in that
-  family looks most cohesive.
-- **Fallback:** if you set only `logo_svg_path`, the printer theme reuses it and
-  recolors shapes tagged with the `cls-1` / `cls-2` CSS classes to the blue
-  accent so a light-on-dark logo stays legible on white. Tag your shapes with
-  those classes (and avoid overlapping them so nothing vanishes once they share a
-  color) — see the bundled [`src/timetui/logo.svg`](src/timetui/logo.svg)
-  placeholder for a working example.
+Set `logo_recolor = false` to skip recoloring and show the logo with its **own**
+colors on every theme — handy when your mark is already colored to taste and
+reads on both backgrounds.
 
 ## Billing
 

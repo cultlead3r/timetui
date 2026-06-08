@@ -277,34 +277,48 @@ def test_logo_text_fallback_has_no_text_shadow_for_pdf_safety():
     assert "text-shadow" not in logo_text_rule
 
 
-def test_printer_recolors_single_logo_to_blue_accent():
-    # A lone (dark-theme) logo is retinted to the printer's blue accent via the
-    # `.logo.recolor` hook (both cls-1 and cls-2) so it stays legible on white.
+def test_recolor_retints_logo_per_theme():
+    # A configured logo carries the `recolor` class (logo_recolor defaults to
+    # True) and is retinted per theme from a single white master: printer -> blue
+    # primary, cyberpunk -> white primary. Both themes emit the recolor hooks.
     printer = report.render_report_html([EARLIER], style="printer", generated=GEN, brand=BRAND)
-    assert ".logo.recolor svg .cls-1" in printer
-    assert ".logo.recolor svg .cls-2" in printer
-    assert "#005a9e" in printer
     assert '<div class="logo recolor">' in printer
-    # Cyberpunk shows the SVG's own colors -> no recolor rule is emitted.
+    assert ".logo.recolor svg .primary" in printer
+    assert "fill: #005a9e !important" in printer  # printer primary
     cyber = report.render_report_html([EARLIER], style="cyberpunk", generated=GEN, brand=BRAND)
-    assert ".logo.recolor svg .cls-1" not in cyber
+    assert '<div class="logo recolor">' in cyber
+    assert ".logo.recolor svg .primary" in cyber
+    assert "fill: #ffffff !important" in cyber  # cyberpunk primary
 
 
-def test_dedicated_printer_logo_used_with_own_colors():
-    brand = report.BrandConfig(
-        company="Acme Corp",
-        logo_svg='<svg id="dark-logo"></svg>',
-        logo_svg_printer='<svg id="print-logo"></svg>',
+def test_recolor_supports_semantic_and_cls_aliases():
+    # Both themes recolor the semantic roles AND the Illustrator cls-N aliases,
+    # with !important so the rules beat inline `fill:` on the SVG shapes.
+    for style in ("cyberpunk", "printer"):
+        css = report.render_report_html([EARLIER], style=style, generated=GEN)
+        for role in ("primary", "secondary", "accent"):
+            assert f".logo.recolor svg .{role}" in css, (style, role)
+        for cls in ("cls-1", "cls-2", "cls-3"):
+            assert f".logo.recolor svg .{cls}" in css, (style, cls)
+        expect = "#ffffff !important" if style == "cyberpunk" else "#005a9e !important"
+        assert f"fill: {expect}" in css, style
+
+
+def test_logo_recolor_toggle_controls_recolor_class():
+    # logo_recolor=False shows the logo with its OWN colors (no `recolor` class)
+    # on every theme; the default (True) tags it for per-theme recoloring.
+    own = report.BrandConfig(
+        company="Acme Corp", logo_svg='<svg id="my-logo"></svg>', logo_recolor=False
     )
-    # Printer theme -> dedicated printer logo, shown as-is (no `recolor` class).
-    printer = report.render_report_html([EARLIER], style="printer", generated=GEN, brand=brand)
-    assert 'id="print-logo"' in printer and 'id="dark-logo"' not in printer
-    assert '<div class="logo">' in printer
-    assert 'class="logo recolor"' not in printer
-    # Cyberpunk theme -> the main (dark) logo, with the recolor hook.
-    cyber = report.render_report_html([EARLIER], style="cyberpunk", generated=GEN, brand=brand)
-    assert 'id="dark-logo"' in cyber and 'id="print-logo"' not in cyber
-    assert 'class="logo recolor"' in cyber
+    for style in ("cyberpunk", "printer"):
+        html = report.render_report_html([EARLIER], style=style, generated=GEN, brand=own)
+        assert 'id="my-logo"' in html
+        assert '<div class="logo">' in html
+        assert '<div class="logo recolor">' not in html
+    default = report.BrandConfig(company="Acme Corp", logo_svg='<svg id="my-logo"></svg>')
+    for style in ("cyberpunk", "printer"):
+        html = report.render_report_html([EARLIER], style=style, generated=GEN, brand=default)
+        assert '<div class="logo recolor">' in html
 
 
 def test_render_no_amount_when_rate_zero_or_omitted():
@@ -489,23 +503,22 @@ def test_clean_svg_strips_prolog_and_keeps_plain():
     assert report._clean_svg("no svg here") == "no svg here"
 
 
-def test_load_brand_config_reads_printer_logo_and_strips_prolog(tmp_path, monkeypatch):
-    (tmp_path / "dark.svg").write_text("<svg id='d'></svg>", encoding="utf-8")
-    (tmp_path / "print.svg").write_text(
+def test_load_brand_config_reads_logo_recolor_and_strips_prolog(tmp_path, monkeypatch):
+    (tmp_path / "mark.svg").write_text(
         "<?xml version='1.0' encoding='UTF-8'?><svg id='p'></svg>", encoding="utf-8"
     )
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         '[brand]\n'
         'company = "X"\n'
-        'logo_svg_path = "dark.svg"\n'
-        'logo_svg_path_printer = "print.svg"\n',
+        'logo_svg_path = "mark.svg"\n'
+        'logo_recolor = false\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("TIMETUI_CONFIG", str(cfg))
     brand = report.load_brand_config()
-    assert brand.logo_svg == "<svg id='d'></svg>"
-    assert brand.logo_svg_printer == "<svg id='p'></svg>"  # XML prolog stripped
+    assert brand.logo_svg == "<svg id='p'></svg>"  # XML prolog stripped
+    assert brand.logo_recolor is False
 
 
 def test_load_brand_config_malformed_toml_falls_back(tmp_path, monkeypatch):
@@ -526,6 +539,7 @@ def test_load_brand_config_partial_keeps_defaults(tmp_path, monkeypatch):
     # No logo configured -> the bundled placeholder logo is used (so a partial
     # config is no worse off than a fresh install with no config at all).
     assert brand.logo_svg == report.PLACEHOLDER_LOGO_SVG
+    assert brand.logo_recolor is True  # default when unset
 
 
 def test_shipped_example_config_loads(tmp_path, monkeypatch):
