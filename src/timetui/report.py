@@ -92,11 +92,15 @@ class BrandConfig:
       both the dark (cyberpunk) and light (printer) sheets; untagged shapes keep
       their own color. Set ``logo_recolor=False`` to show the logo with its own
       colors on every theme.
+    * ``rate`` is the configured hourly billing rate (default ``0.0`` = unset).
+      When > 0 the TUI shows live dollar amounts (per tag-set and next to the Σ
+      total) and the report dialog pre-fills its "Amount Due" rate from it.
     """
 
     company: str = "YourCompany"
     tagline: str = "Meow btw. If you even care."
     currency: str = "USD"
+    rate: float = 0.0
     btc_address: str = "bc1meowbtwifyouevencare"
     logo_svg: str = PLACEHOLDER_LOGO_SVG
     logo_recolor: bool = True
@@ -1065,6 +1069,20 @@ def _config_path() -> Path:
     return base / "timetui" / "config.toml"
 
 
+def _coerce_rate(value: object) -> float:
+    """Parse a config ``rate`` into a non-negative float (pure: unit-tested).
+
+    Anything non-numeric or negative becomes ``0.0`` (rate unset), mirroring the
+    "never crash on a bad config" behavior of the rest of the loader — a bad rate
+    simply turns the live dollar amounts off rather than raising.
+    """
+    try:
+        rate = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    return rate if rate > 0 else 0.0
+
+
 def load_brand_config(path: str | Path | None = None) -> BrandConfig:
     """Load branding from the user's TOML config, else return :data:`DEFAULT_BRAND`.
 
@@ -1076,7 +1094,9 @@ def load_brand_config(path: str | Path | None = None) -> BrandConfig:
     The ``[brand]`` table maps onto :class:`BrandConfig`. ``logo_svg_path`` is read
     into ``logo_svg`` (relative paths resolve next to the config file); an inline
     ``logo_svg`` is used only when no readable path is given. ``logo_recolor``
-    (bool, default ``True``) toggles the per-theme recolor of the logo.
+    (bool, default ``True``) toggles the per-theme recolor of the logo. ``rate``
+    (number, default ``0`` = unset) is the hourly billing rate; a non-numeric or
+    negative value is treated as unset (see :func:`_coerce_rate`).
     """
     import tomllib
 
@@ -1108,6 +1128,7 @@ def load_brand_config(path: str | Path | None = None) -> BrandConfig:
         company=str(brand.get("company", DEFAULT_BRAND.company)),
         tagline=str(brand.get("tagline", DEFAULT_BRAND.tagline)),
         currency=str(brand.get("currency", DEFAULT_BRAND.currency)),
+        rate=_coerce_rate(brand.get("rate", DEFAULT_BRAND.rate)),
         btc_address=str(brand.get("btc_address", DEFAULT_BRAND.btc_address)),
         logo_svg=_logo("logo_svg", "logo_svg_path") or PLACEHOLDER_LOGO_SVG,
         logo_recolor=bool(brand.get("logo_recolor", DEFAULT_BRAND.logo_recolor)),

@@ -36,6 +36,16 @@ def format_hours_decimal(td: timedelta) -> str:
     return f"{td.total_seconds() / 3600:.2f}h"
 
 
+def billing_amount(td: timedelta, rate: float) -> float:
+    """Money owed for a duration at an hourly ``rate`` (decimal hours × rate)."""
+    return td.total_seconds() / 3600.0 * rate
+
+
+def format_amount(amount: float) -> str:
+    """Format a billing amount as dollars, like '$1,234.00' (thousands-separated)."""
+    return f"${amount:,.2f}"
+
+
 @dataclass
 class Interval:
     """A single Time Warrior interval."""

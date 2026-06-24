@@ -381,10 +381,17 @@ class ReportScreen(ModalScreen["dict | None"]):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, *, count: int, default_path: str = "~/timetui-report.html") -> None:
+    def __init__(
+        self,
+        *,
+        count: int,
+        default_path: str = "~/timetui-report.html",
+        default_rate: float = 0.0,
+    ) -> None:
         super().__init__()
         self._count = count
         self._default_path = default_path
+        self._default_rate = default_rate
 
     def compose(self) -> ComposeResult:
         label = "entry" if self._count == 1 else "entries"
@@ -403,7 +410,8 @@ class ReportScreen(ModalScreen["dict | None"]):
                         yield RadioButton("pdf", id="format-pdf")
                         yield RadioButton("text", id="format-text")
             yield Label("Hourly rate  (blank = no amount)")
-            yield Input(placeholder="e.g. 100", id="rate-input")
+            rate_value = f"{self._default_rate:g}" if self._default_rate > 0 else ""
+            yield Input(value=rate_value, placeholder="e.g. 100", id="rate-input")
             yield Label("Output file")
             yield Input(value=self._default_path, id="path-input")
             yield Checkbox("Open when done", value=True, id="open-checkbox")
@@ -622,6 +630,7 @@ class HelpScreen(ModalScreen[None]):
 [b]Billing[/b]
   Σ in status bar = total of the filtered set (Hh Mm + decimal)
   sidebar shows totals grouped by tag-set
+  set an hourly rate in config -> live $ amounts per tag-set and at the Σ
 
 [b]Edit[/b] (Time Warrior)
   a    annotate            t / T   add / remove tag

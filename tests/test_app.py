@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from textual.widgets import RadioButton, SelectionList
+from textual.widgets import Input, RadioButton, SelectionList, Static
 
-from timetui import timew
+from timetui import report, timew
 from timetui.app import TAGS_GAP, TAGS_MAX, TimewApp
 from timetui.models import Interval
 from timetui.screens import ColumnsScreen, ReportScreen, TextReportScreen, VimRadioSet
@@ -43,6 +43,17 @@ def fixed_intervals(monkeypatch):
     fixtures = [Interval.from_export(r) for r in RAW]
     monkeypatch.setattr(timew, "load_intervals", lambda: list(fixtures))
     return fixtures
+
+
+@pytest.fixture
+def rated_intervals(monkeypatch, fixed_intervals):
+    """Fixed intervals plus a configured $200/h rate (no real config file read)."""
+    monkeypatch.setattr(
+        report,
+        "load_brand_config",
+        lambda *a, **k: report.BrandConfig(rate=200.0, currency="USD"),
+    )
+    return fixed_intervals
 
 
 def test_snapshot_default(snap_compare, fixed_intervals):
@@ -235,5 +246,76 @@ def test_text_report_opens_preview(fixed_intervals, tmp_path, monkeypatch):
             # No user config in tests -> neutral default branding.
             assert "YourCompany" in content and "Total" in content
             assert (tmp_path / "timetui-report.txt").exists()
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Hourly rate -> live dollar amounts (status Σ + sidebar tag-set breakdown)
+# --------------------------------------------------------------------------- #
+def test_snapshot_rate_amounts(snap_compare, rated_intervals):
+    # With an hourly rate configured, the sidebar shows a $ figure per tag-set and
+    # the status bar shows the grand-total $ next to the Σ summation.
+    assert snap_compare(SnapApp(), terminal_size=(120, 30))
+
+
+def test_rate_shows_dollar_amounts(rated_intervals):
+    """A configured rate adds $ totals to the status Σ and the tag-set breakdown."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            status = str(app.query_one("#status", Static).content)
+            breakdown = str(app.query_one("#breakdown", Static).content)
+            # All 8 fixtures total 6.5h; at $200/h that is $1,300.00 next to Σ.
+            assert "$1,300.00" in status
+            # The LA + paid tag-set is 3.5h -> $700.00 in the sidebar.
+            assert "$700.00" in breakdown
+
+    asyncio.run(scenario())
+
+
+def test_rate_selection_shows_selected_amount(rated_intervals):
+    """Selecting rows shows the selection's $ total next to the selected Σ."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("space")  # select the newest row (15m -> 0.25h)
+            await pilot.pause()
+            status = str(app.query_one("#status", Static).content)
+            assert "selected" in status
+            assert "$50.00" in status  # 0.25h × $200/h
+
+    asyncio.run(scenario())
+
+
+def test_no_rate_means_no_dollar_amounts(fixed_intervals):
+    """Without a configured rate (the default), no $ amounts appear anywhere."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            assert app.brand.rate == 0.0
+            assert "$" not in str(app.query_one("#status", Static).content)
+            assert "$" not in str(app.query_one("#breakdown", Static).content)
+
+    asyncio.run(scenario())
+
+
+def test_report_dialog_prefills_rate_from_config(rated_intervals):
+    """The configured rate pre-fills the report dialog's Hourly rate input."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            assert app.screen.query_one("#rate-input", Input).value == "200"
 
     asyncio.run(scenario())

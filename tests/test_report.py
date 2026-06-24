@@ -496,6 +496,37 @@ def test_load_brand_config_reads_toml_and_relative_logo(tmp_path, monkeypatch):
     assert brand.logo_svg == "<svg id='mine'></svg>"
 
 
+def test_coerce_rate_parses_numbers_and_guards_bad_values():
+    # Pure: ints/floats/numeric strings parse; junk, negatives and 0 -> unset.
+    assert report._coerce_rate(200) == 200.0
+    assert report._coerce_rate(200.5) == 200.5
+    assert report._coerce_rate("150") == 150.0
+    assert report._coerce_rate("lots") == 0.0
+    assert report._coerce_rate(-50) == 0.0
+    assert report._coerce_rate(None) == 0.0
+    assert report._coerce_rate(0) == 0.0
+
+
+def test_default_brand_has_no_rate():
+    assert report.DEFAULT_BRAND.rate == 0.0
+
+
+def test_load_brand_config_reads_rate(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[brand]\ncompany = "X"\nrate = 200\n', encoding="utf-8")
+    monkeypatch.setenv("TIMETUI_CONFIG", str(cfg))
+    assert report.load_brand_config().rate == 200.0
+
+
+def test_load_brand_config_bad_rate_is_treated_as_unset(tmp_path, monkeypatch):
+    # A non-numeric / negative rate must not crash the loader; it falls back to 0
+    # (rate unset -> no live dollar amounts), like the rest of the bad-config path.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[brand]\nrate = "expensive"\n', encoding="utf-8")
+    monkeypatch.setenv("TIMETUI_CONFIG", str(cfg))
+    assert report.load_brand_config().rate == 0.0
+
+
 def test_clean_svg_strips_prolog_and_keeps_plain():
     assert report._clean_svg("<?xml version='1.0'?>\n<svg id='a'/>") == "<svg id='a'/>"
     assert report._clean_svg("<svg id='b'/>") == "<svg id='b'/>"

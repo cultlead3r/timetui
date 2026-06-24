@@ -25,6 +25,12 @@ tagline = "We don't provide a service. We provide a result."
 # Currency label for the optional "Amount Due" row.
 currency = "USD"
 
+# Hourly billing rate. When set (> 0), timetui figures out the dollar amount and
+# shows it live in the TUI — per tag-set in the sidebar "Totals" pane and as a
+# grand total next to the Σ summation in the status bar — and pre-fills the
+# report's "Amount Due" rate. Omit (or set 0) for an hours-only view.
+# rate = 200
+
 # Bitcoin address for the payment block + QR code.
 # Omit (or comment out) to use the bundled placeholder; set to "" to hide the
 # payment section entirely (no QR, no copy-to-clipboard).

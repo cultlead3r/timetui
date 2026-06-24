@@ -14,7 +14,8 @@ I know if it was made in rust it would make me more leet. But oh well.
   the annotation/date/time (so `LA new` = tagged **both** LA and new, while
   `mailerlite` searches annotations)
 - **Live billing totals** of the filtered set — `Σ Hh Mm` **and decimal hours** — plus a
-  **totals-by-tag-set** breakdown in the sidebar
+  **totals-by-tag-set** breakdown in the sidebar; set an hourly `rate` in config and
+  it also shows the **dollar amount** per tag-set and next to the `Σ` summation
 - Dark, neon "cyberpunk" theme by default — switch to any built-in Textual theme
   (monokai, dracula, gruvbox, nord, …) via the command palette (`Ctrl+P` →
   "Change theme") and the table/sidebar colors follow it
@@ -150,6 +151,7 @@ as a starting point:
 company = "Acme Consulting"
 tagline = "We ship results."     # omit -> bundled placeholder; "" -> no side tagline
 currency = "USD"
+rate = 200                       # hourly rate -> live $ amounts; omit/0 -> hours only
 btc_address = "bc1q..."          # omit -> bundled placeholder; "" -> no payment block
 logo_svg_path = "logo.svg"       # relative to this file; omit -> bundled placeholder
 ```
@@ -183,6 +185,13 @@ that slice in both `Hh Mm` and decimal hours. The sidebar groups the total by th
 **exact tag-set** of the matching rows (e.g. `LA + new`), so each interval is
 counted once and the groups sum to `Σ`. Non-tag terms like `mailerlite` or a date
 fragment fuzzy-search the annotation/date/time instead.
+
+Set an hourly `rate` in `[brand]` (see [`config.example.toml`](config.example.toml))
+and timetui turns those durations into **dollar amounts**: each tag-set in the
+sidebar gets its `$` total and a grand total appears next to the `Σ` summation in
+the status bar (the configured rate also pre-fills the report's "Amount Due"). The
+amounts follow the selection when one is active, just like the time totals. Leave
+`rate` unset (or `0`) for an hours-only view.
 
 ## Data safety
 

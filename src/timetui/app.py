@@ -22,7 +22,13 @@ from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from . import report, timew
-from .models import Interval, format_duration, format_hours_decimal
+from .models import (
+    Interval,
+    billing_amount,
+    format_amount,
+    format_duration,
+    format_hours_decimal,
+)
 from .screens import (
     ColumnsScreen,
     ConfirmScreen,
@@ -190,6 +196,9 @@ class TimewApp(App):
         self._render_ready: bool = False  # guards resize re-render until first layout
         # multi-selected intervals, keyed by their (stable) start datetime
         self.selected: set[datetime] = set()
+        # User branding/billing config; the real one is loaded from disk in
+        # `on_mount` (the neutral default has rate 0 -> no live dollar amounts).
+        self.brand: report.BrandConfig = report.DEFAULT_BRAND
 
     # ----------------------------------------------------------------- layout
     def compose(self) -> ComposeResult:
@@ -222,6 +231,9 @@ class TimewApp(App):
         search.display = False  # hidden until activated with /
         self.query_one("#detail", Static).border_title = "Detail"
         self.query_one("#breakdown", Static).border_title = "Totals by tag-set"
+        # Load branding/billing config (e.g. the hourly rate) before the first
+        # render so live dollar amounts appear immediately when a rate is set.
+        self.brand = report.load_brand_config()
         self.reload()
         self.table.focus()
         self.set_interval(1.0, self._tick)
@@ -502,6 +514,18 @@ class TimewApp(App):
         return cell
 
     # ------------------------------------------------------------- side panels
+    def _amount_markup(self, td: timedelta) -> str:
+        """Trailing ``  $X`` money markup for a duration, or '' when no rate is set.
+
+        Returns the configured-rate dollar value of ``td`` (decimal hours × rate)
+        in the success color, with a leading separator so it can be appended right
+        after a Σ total. Empty string when ``brand.rate`` is unset (rate ≤ 0).
+        """
+        if self.brand.rate <= 0:
+            return ""
+        amount = format_amount(billing_amount(td, self.brand.rate))
+        return f"  [{self._pal['success']}][b]{amount}[/b][/]"
+
     def _update_status(self, now: datetime) -> None:
         total = sum((iv.duration(now) for iv in self.displayed), timedelta())
         count = len(self.displayed)
@@ -509,7 +533,7 @@ class TimewApp(App):
         parts = [
             f"[b]{count}[/b] {'entry' if count == 1 else 'entries'}",
             f"[{self._pal['secondary']}]\u03a3 [b]{format_duration(total)}[/b] "
-            f"([b]{format_hours_decimal(total)}[/b])[/]",
+            f"([b]{format_hours_decimal(total)}[/b])[/]" + self._amount_markup(total),
         ]
         if active:
             parts.append(f"[{self._pal['success']}]\u25cf {active} active[/]")
@@ -520,6 +544,7 @@ class TimewApp(App):
                 f"[{self._pal['accent']}][b]{len(self.selected)}[/b] selected "
                 f"\u03a3 [b]{format_duration(sel_total)}[/b] "
                 f"([b]{format_hours_decimal(sel_total)}[/b])[/]"
+                + self._amount_markup(sel_total)
             )
         if self.query:
             parts.append(f"[{self._pal['accent']}]filter[/] [i]{self.query}[/i]")
@@ -548,10 +573,14 @@ class TimewApp(App):
         else:
             for key, dur in sorted(totals.items(), key=lambda kv: kv[1], reverse=True):
                 lines.append(f"[{self._pal['primary']}]{key}[/]")
-                lines.append(
+                line = (
                     f"  [b]{format_duration(dur)}[/b]"
                     f"  [dim]{format_hours_decimal(dur)}[/dim]"
                 )
+                if self.brand.rate > 0:
+                    amount = format_amount(billing_amount(dur, self.brand.rate))
+                    line += f"  [{self._pal['success']}]{amount}[/]"
+                lines.append(line)
         self.query_one("#breakdown", Static).update("\n".join(lines))
 
     def _update_detail(self) -> None:
@@ -955,7 +984,9 @@ class TimewApp(App):
         if not targets:
             self.notify("Nothing to report", severity="warning", timeout=3)
             return
-        result = await self.push_screen_wait(ReportScreen(count=len(targets)))
+        result = await self.push_screen_wait(
+            ReportScreen(count=len(targets), default_rate=self.brand.rate)
+        )
         if not result:
             return
         if result["format"] == "pdf" and not report.chromium_available():
