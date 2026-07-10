@@ -68,6 +68,11 @@ Never add a test that shells out to real `timew`.
   (`app._record_invoice`) issues two tag-only timew calls (tag `invoiced`+ID, untag `new`);
   tag ops never reorder intervals so @ids stay valid between the calls. Ledger save failures
   abort *before* the retag so tags never claim an unrecorded invoice.
+- Interval tags mirror the lifecycle `new -> invoiced -> paid` (all three are `WORKFLOW_TAGS`,
+  excluded from client derivation). Crossing the paid boundary is detected by the pure
+  `paid_transitions(before, after)` and applied by `app._sync_paid_tags`, which finds intervals
+  **by the invoice-ID tag** (never stale @ids) and swaps `invoiced`<->`paid` per invoice (two
+  atomic tag-only calls). Same ordering rule: ledger save first, retag after.
 - The report-dialog snapshot embeds a suggested ID containing the current year — tests pin
   `app._today` (module-level helper) for determinism; don't call `date.today()` directly in
   `app.py`.

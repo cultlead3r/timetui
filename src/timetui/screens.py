@@ -937,10 +937,12 @@ class HelpScreen(ModalScreen[None]):
   sidebar shows totals grouped by tag-set
   set an hourly rate in config -> live $ amounts per tag-set and at the Σ
 
-[b]Invoices[/b]
+[b]Invoices[/b]  (tags mirror the lifecycle: new -> invoiced -> paid)
   R    "Record invoice" in the report dialog snapshots the amount into the
        ledger and retags the intervals (new -> invoiced + the invoice ID)
   I    invoice ledger: amount / paid / balance   p  payment   x  delete
+       the payment that settles a balance retags its intervals
+       invoiced -> paid (a reopening refund swaps back)
 
 [b]Edit[/b] (Time Warrior)
   a    annotate            t / T   add / remove tag

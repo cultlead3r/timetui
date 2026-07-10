@@ -471,8 +471,13 @@ def test_backfill_invoice_from_already_invoiced_intervals(tmp_path, monkeypatch)
     asyncio.run(scenario())
 
 
-def test_invoice_payment_flow_persists(fixed_intervals):
-    """I -> p records a partial payment; closing the screen saves the ledger."""
+def test_invoice_payment_flow_persists(fixed_intervals, monkeypatch):
+    """I -> p records a partial payment; closing the screen saves the ledger.
+    A *partial* payment crosses no paid boundary -> no timew call is issued."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
     path = invoices.ledger_path()
     invoices.save_ledger(
         path,
@@ -525,6 +530,112 @@ def test_invoice_payment_flow_persists(fixed_intervals):
             assert saved[0].balance == 600.0
             assert saved[0].status == "partial"
             assert saved[0].payments[0].note == "wire ref 9"
+            assert calls == []  # still partial -> no tag swap
+
+    asyncio.run(scenario())
+
+
+async def _record_payment_via_ui(app, pilot, amount: str) -> None:
+    """Drive I -> p -> enter ``amount`` -> save -> q (close the ledger screen)."""
+    await pilot.press("I")
+    for _ in range(40):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, InvoicesScreen):
+            break
+    assert isinstance(app.screen, InvoicesScreen)
+    await pilot.press("p")
+    for _ in range(40):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, PaymentScreen):
+            break
+    assert isinstance(app.screen, PaymentScreen)
+    app.screen.query_one("#amount-input", Input).value = amount
+    app.screen.action_save()
+    for _ in range(40):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, InvoicesScreen):
+            break
+    await pilot.press("q")
+    await pilot.pause()
+
+
+def test_full_payment_swaps_invoiced_for_paid(monkeypatch):
+    """Settling an invoice swaps its intervals' tags: + paid, - invoiced."""
+    raw = [
+        {"id": 2, "start": "20260308T090000Z", "end": "20260308T100000Z",
+         "tags": ["LA", "invoiced", "LA-2026-001"], "annotation": "billed work"},
+        {"id": 1, "start": "20260311T120000Z", "end": "20260311T123000Z",
+         "tags": ["LA", "invoiced", "LA-2026-001"], "annotation": "more work"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    invoices.save_ledger(
+        path,
+        [Invoice(id="LA-2026-001", date="2026-03-12", hours=1.5, rate=200.0,
+                 amount=300.0)],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # the amount field pre-fills the full balance; paying it settles
+            await _record_payment_via_ui(app, pilot, "300")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            # intervals found by the LA-2026-001 tag; one atomic call per op
+            assert calls == [
+                ["tag", "@2", "@1", "paid"],
+                ["untag", "@2", "@1", "invoiced"],
+            ]
+            assert invoices.load_ledger(path)[0].status == "paid"
+
+    asyncio.run(scenario())
+
+
+def test_refund_swaps_paid_back_to_invoiced(monkeypatch):
+    """A refund that reopens the balance reverses the swap: + invoiced, - paid."""
+    raw = [
+        {"id": 1, "start": "20260308T090000Z", "end": "20260308T100000Z",
+         "tags": ["LA", "paid", "LA-2026-001"], "annotation": "settled work"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    invoices.save_ledger(
+        path,
+        [Invoice(id="LA-2026-001", date="2026-03-12", hours=1.0, rate=200.0,
+                 amount=200.0,
+                 payments=[Payment(date="2026-03-15", amount=200.0)])],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await _record_payment_via_ui(app, pilot, "-50")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            assert calls == [
+                ["tag", "@1", "invoiced"],
+                ["untag", "@1", "paid"],
+            ]
+            assert invoices.load_ledger(path)[0].status == "partial"
 
     asyncio.run(scenario())
 

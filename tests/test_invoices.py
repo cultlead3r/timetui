@@ -105,6 +105,62 @@ def test_derive_client_empty_inputs():
     assert invoices.derive_client([["new"], ["new"]]) == ""
 
 
+def test_derive_client_drops_paid_workflow_tag():
+    # backfilling already-settled work ({LA, paid}) still derives the client
+    assert invoices.derive_client([["LA", "paid"], ["LA", "paid"]]) == "LA"
+
+
+# --------------------------------------------------------------------------- #
+# Paid-status transitions (drives the invoiced <-> paid tag swap)
+# --------------------------------------------------------------------------- #
+def paid_invoice(**overrides) -> Invoice:
+    return make_invoice(
+        payments=[Payment(date="2026-07-12", amount=1300.0)], **overrides
+    )
+
+
+def test_paid_transitions_newly_paid():
+    before = {"LA-2026-001": "partial"}
+    newly_paid, reopened = invoices.paid_transitions(before, [paid_invoice()])
+    assert newly_paid == ["LA-2026-001"]
+    assert reopened == []
+
+
+def test_paid_transitions_reopened_by_refund():
+    before = {"LA-2026-001": "paid"}
+    refunded = make_invoice(payments=[
+        Payment(date="2026-07-12", amount=1300.0),
+        Payment(date="2026-07-20", amount=-300.0, note="refund"),
+    ])
+    newly_paid, reopened = invoices.paid_transitions(before, [refunded])
+    assert newly_paid == []
+    assert reopened == ["LA-2026-001"]
+
+
+def test_paid_transitions_no_change():
+    # staying paid / staying partial crosses no boundary
+    before = {"LA-2026-001": "paid", "B-2026-001": "partial"}
+    partial = make_invoice(
+        id="B-2026-001", payments=[Payment(date="2026-07-12", amount=100.0)]
+    )
+    assert invoices.paid_transitions(before, [paid_invoice(), partial]) == ([], [])
+
+
+def test_paid_transitions_ignores_deleted_and_added_invoices():
+    # deleted from the ledger -> tags untouched; unknown-before ids are skipped
+    before = {"LA-2026-001": "paid"}
+    added = paid_invoice(id="B-2026-001")  # not in `before`
+    assert invoices.paid_transitions(before, [added]) == ([], [])
+    assert invoices.paid_transitions(before, []) == ([], [])
+
+
+def test_paid_transitions_orders_by_after():
+    before = {"A-2026-001": "unpaid", "B-2026-001": "unpaid"}
+    after = [paid_invoice(id="B-2026-001"), paid_invoice(id="A-2026-001")]
+    newly_paid, _ = invoices.paid_transitions(before, after)
+    assert newly_paid == ["B-2026-001", "A-2026-001"]
+
+
 # --------------------------------------------------------------------------- #
 # Invoice-ID generation
 # --------------------------------------------------------------------------- #

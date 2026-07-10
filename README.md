@@ -203,8 +203,10 @@ amounts follow the selection when one is active, just like the time totals. Leav
 
 ## Invoices & payments
 
-The typical billing loop — tag work `new`, invoice it, retag it `invoiced`,
-then chase (possibly partial) payments — is built in:
+The typical billing loop — tag work `new`, invoice it, chase (possibly
+partial) payments until it's settled — is built in. Interval tags mirror the
+full lifecycle automatically: **`new` → `invoiced` → `paid`**, so the main
+table always shows which work is unbilled, awaiting money, or settled:
 
 1. Filter to the un-invoiced work (e.g. `LA new`), press `R`, and check
    **Record invoice**. On export timetui:
@@ -218,7 +220,12 @@ then chase (possibly partial) payments — is built in:
 3. When money arrives, press `p` on the invoice and enter the amount (pre-filled
    with the full balance), date, and an optional note (e.g. `wire ref 123`).
    Partial payments accumulate until the balance clears; `x` deletes a
-   mis-recorded invoice (after confirming).
+   mis-recorded invoice (after confirming — interval tags are left alone).
+4. The payment that **settles the balance** retags the invoice's intervals
+   automatically: `paid` replaces `invoiced` (the invoice-ID tag stays, keeping
+   the ledger link). A refund (negative payment) that reopens the balance swaps
+   the tags back. So filtering `invoiced` = billed & outstanding, `paid` =
+   settled — no manual retagging.
 
 **Invoice IDs** follow `{Client}-{year}-{seq}` (e.g. `LA-2026-003`): the client
 prefix is the tag shared by every interval in the report (workflow tags like

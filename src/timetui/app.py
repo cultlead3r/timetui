@@ -1099,9 +1099,17 @@ class TimewApp(App):
 
     @work
     async def action_invoices(self) -> None:
-        """Open the invoice ledger; save it back if the screen changed it."""
+        """Open the invoice ledger; save it back if the screen changed it.
+
+        Payments recorded in the screen can move an invoice across the "paid"
+        boundary; the interval tags mirror that (``invoiced`` -> ``paid``, and
+        back when a refund reopens the balance). The ledger is saved *first* —
+        a failed save skips the retag, so tags never claim a payment state the
+        ledger doesn't record.
+        """
         ledger_file = invoices.ledger_path()
         ledger = invoices.load_ledger(ledger_file)
+        before = {inv.id: inv.status for inv in ledger}
         changed = await self.push_screen_wait(InvoicesScreen(ledger))
         if not changed:
             return
@@ -1110,6 +1118,52 @@ class TimewApp(App):
         except OSError as exc:
             self.notify(f"Could not save invoice ledger: {exc}",
                         title="Ledger not saved", severity="error", timeout=10)
+            return
+        self._sync_paid_tags(*invoices.paid_transitions(before, ledger))
+
+    def _sync_paid_tags(self, newly_paid: list[str], reopened: list[str]) -> None:
+        """Mirror paid-status transitions onto the covered intervals' tags.
+
+        For each transitioned invoice its intervals are found **by the
+        invoice-ID tag** (timew renumbers @ids, the tag is the stable link):
+        newly paid -> add ``paid``, drop ``invoiced``; reopened -> the reverse.
+        Each swap is two atomic tag-only timew calls (never reorder intervals,
+        so @ids stay valid between them; ``u`` twice undoes one swap). Invoices
+        whose intervals can't be found (deleted / hand-retagged) only warn —
+        the ledger change stands either way.
+        """
+        if not newly_paid and not reopened:
+            return
+        keep = self.current_interval()
+        swapped = 0
+        for invoice_id, add, remove in [
+            *((iid, "paid", "invoiced") for iid in newly_paid),
+            *((iid, "invoiced", "paid") for iid in reopened),
+        ]:
+            covered = [iv for iv in self.all_intervals if invoice_id in iv.tags]
+            if not covered:
+                self.notify(
+                    f"No intervals tagged {invoice_id} — tags not updated",
+                    severity="warning", timeout=8,
+                )
+                continue
+            with_remove = [iv.id for iv in covered if remove in iv.tags]
+            try:
+                timew.execute(timew.args_tag_many([iv.id for iv in covered], [add]))
+                if with_remove:
+                    timew.execute(timew.args_untag_many(with_remove, [remove]))
+            except timew.TimewError as exc:
+                self.notify(exc.message or str(exc), title="timew error",
+                            severity="error", timeout=8)
+                self.reload()
+                return
+            swapped += 1
+        if swapped:
+            self.notify(
+                f"Updated tags for {swapped} invoice{'s' if swapped != 1 else ''}",
+                severity="information", timeout=4,
+            )
+            self.reload(preserve_start=keep.start if keep else None)
 
     def _open_file(self, path: Path) -> None:
         """Open ``path`` with the platform's default handler (best effort)."""

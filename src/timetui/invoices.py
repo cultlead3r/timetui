@@ -20,6 +20,11 @@ Invoice IDs follow ``{Client}-{year}-{seq}`` (e.g. ``LA-2026-003``): the client
 prefix is the tag shared by every invoiced interval, and the sequence is scoped
 per client per year. The ID doubles as the timew tag stamped on the covered
 intervals, so filtering by it shows exactly that invoice's work.
+
+Interval tags mirror the lifecycle ``new -> invoiced -> paid``: recording an
+invoice swaps ``new`` for ``invoiced``, and a payment that settles the balance
+swaps ``invoiced`` for ``paid`` (a refund that reopens the balance swaps back
+— see :func:`paid_transitions`, driven by ``app.action_invoices``).
 """
 
 from __future__ import annotations
@@ -30,10 +35,11 @@ import re
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
-# Tags that mark workflow state, not a client — never a client prefix candidate.
-WORKFLOW_TAGS = frozenset({"new", "invoiced"})
+# Tags that mark workflow state (new -> invoiced -> paid), not a client —
+# never a client prefix candidate.
+WORKFLOW_TAGS = frozenset({"new", "invoiced", "paid"})
 # Half a cent: float dust from hours × rate never flips paid/partial status.
 PAID_EPSILON = 0.005
 LEDGER_FILENAME = "invoices.json"
@@ -122,6 +128,31 @@ def next_invoice_id(invoices: Sequence[Invoice], client: str, today: date) -> st
     pattern = re.compile(re.escape(prefix) + r"(\d+)$")
     seqs = [int(m.group(1)) for inv in invoices if (m := pattern.match(inv.id))]
     return f"{prefix}{max(seqs, default=0) + 1:03d}"
+
+
+def paid_transitions(
+    before: Mapping[str, str], after: Sequence[Invoice]
+) -> tuple[list[str], list[str]]:
+    """Invoice IDs whose status crossed the "paid" boundary (pure: unit-tested).
+
+    ``before`` maps invoice ID -> status as snapshotted before an edit session;
+    ``after`` is the ledger afterwards. Returns ``(newly_paid, reopened)``:
+    IDs that became fully paid (their intervals get the ``invoiced -> paid`` tag
+    swap) and IDs that left "paid" (a refund reopened the balance; the swap is
+    reversed). Invoices deleted from the ledger appear in neither list —
+    deletion never touches interval tags. Order follows ``after``.
+    """
+    newly_paid: list[str] = []
+    reopened: list[str] = []
+    for inv in after:
+        old = before.get(inv.id)
+        if old is None:
+            continue  # added during the session (not possible today, but safe)
+        if inv.status == "paid" and old != "paid":
+            newly_paid.append(inv.id)
+        elif inv.status != "paid" and old == "paid":
+            reopened.append(inv.id)
+    return newly_paid, reopened
 
 
 # --------------------------------------------------------------------------- #
