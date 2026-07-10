@@ -11,11 +11,18 @@ guaranteed-missing path for every test, so it falls back to the neutral
 It also clears ``TIMEWARRIORDB`` so a value in the developer's shell can never
 leak into env-building assertions (and as a safety net, so nothing could point a
 stray real ``timew`` call at the real database).
+
+The invoice ledger gets the same isolation: ``invoices.ledger_path`` normally
+resolves next to the real Time Warrior db, and the report dialog reads the
+ledger on every ``R`` press — so every test gets a fresh temp ledger path.
+Tests that need ledger contents write them via ``invoices.save_ledger``.
 """
 
 from __future__ import annotations
 
 import pytest
+
+from timetui import invoices
 
 
 @pytest.fixture(autouse=True)
@@ -24,3 +31,10 @@ def _isolate_brand_config(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("TIMETUI_CONFIG", str(missing))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("TIMEWARRIORDB", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_invoice_ledger(tmp_path_factory, monkeypatch):
+    ledger = tmp_path_factory.mktemp("ledger") / invoices.LEDGER_FILENAME
+    monkeypatch.setattr(invoices, "ledger_path", lambda: ledger)
+    return ledger

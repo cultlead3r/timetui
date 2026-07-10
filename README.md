@@ -16,6 +16,10 @@ I know if it was made in rust it would make me more leet. But oh well.
 - **Live billing totals** of the filtered set — `Σ Hh Mm` **and decimal hours** — plus a
   **totals-by-tag-set** breakdown in the sidebar; set an hourly `rate` in config and
   it also shows the **dollar amount** per tag-set and next to the `Σ` summation
+- **Invoice & payment tracking** — record an invoice straight from the report
+  dialog (auto-numbered per client, e.g. `LA-2026-003`; retags `new` →
+  `invoiced`), then track partial payments and outstanding balances in the
+  ledger screen (`I`)
 - Dark, neon "cyberpunk" theme by default — switch to any built-in Textual theme
   (monokai, dracula, gruvbox, nord, …) via the command palette (`Ctrl+P` →
   "Change theme") and the table/sidebar colors follow it
@@ -85,7 +89,8 @@ database?" prompt, which would otherwise hang the TUI).
 | `s` / `S` | start / stop tracking |
 | `c` | continue (resume the highlighted interval now) |
 | `u` | undo the last Time Warrior change |
-| `R` | generate an HTML/PDF report of the selection (or the filtered view) |
+| `R` | generate an HTML/PDF report of the selection (or the filtered view), optionally recording it as an invoice |
+| `I` | invoice ledger: amounts, payments, balances (`p` = record payment, `x` = delete) |
 | `w` | wrap annotations (multi-line rows) |
 | `f` | toggle the sidebar (full-width table) |
 | `C` | show / hide table columns (ID hidden by default) |
@@ -119,6 +124,9 @@ Press `R` to generate a styled time report. A dialog asks for:
   invoice previewed in-app and saved as `.txt`)
 - **Hourly rate** — optional; when set, an **Amount Due** row (decimal hours ×
   rate) is added to the report. Leave blank for an hours-only report.
+- **Record invoice** — snapshot this export into the invoice ledger under the
+  suggested (editable) invoice ID, and retag the covered intervals (see
+  [Invoices & payments](#invoices--payments))
 - **Output file** — defaults to `~/timetui-report.html`
 - **Open when done** — launch the file in your default viewer afterwards
 
@@ -192,6 +200,43 @@ sidebar gets its `$` total and a grand total appears next to the `Σ` summation 
 the status bar (the configured rate also pre-fills the report's "Amount Due"). The
 amounts follow the selection when one is active, just like the time totals. Leave
 `rate` unset (or `0`) for an hours-only view.
+
+## Invoices & payments
+
+The typical billing loop — tag work `new`, invoice it, retag it `invoiced`,
+then chase (possibly partial) payments — is built in:
+
+1. Filter to the un-invoiced work (e.g. `LA new`), press `R`, and check
+   **Record invoice**. On export timetui:
+   - saves the invoice — ID, date, hours, rate, amount — to the ledger, and
+   - retags the covered intervals in one shot: adds `invoiced` **and the
+     invoice ID**, removes `new` (two atomic `timew` calls; `u` twice undoes
+     the retag).
+2. Press `I` any time to open the ledger: every invoice with **Amount / Paid /
+   Balance / Status** (`unpaid` / `partial` / `paid`), a `Σ` line with the
+   total outstanding, and the highlighted invoice's payment history.
+3. When money arrives, press `p` on the invoice and enter the amount (pre-filled
+   with the full balance), date, and an optional note (e.g. `wire ref 123`).
+   Partial payments accumulate until the balance clears; `x` deletes a
+   mis-recorded invoice (after confirming).
+
+**Invoice IDs** follow `{Client}-{year}-{seq}` (e.g. `LA-2026-003`): the client
+prefix is the tag shared by every interval in the report (workflow tags like
+`new`/`invoiced` don't count), and the sequence is per client per year. The ID
+field in the report dialog is always editable, so you can override any one-off.
+Because the ID is also a tag on the intervals, typing it into the filter box
+shows exactly the work that invoice covered.
+
+**Backfilling** an invoice you already sent outside this workflow works the
+same way: select (or filter to) the intervals — even if they're already tagged
+`invoiced` — press `R`, and record. Re-tagging `invoiced` is a no-op and the
+invoice ID tag is added as usual. Note the ledger stores the *recording* date;
+if the original invoice date matters, edit it in `invoices.json`.
+
+The ledger is a plain JSON file, `invoices.json`, stored **next to the Time
+Warrior database** (so a separate `--timew-dir` client database gets its own
+ledger, and your db backups cover it). The invoice amount is a snapshot taken
+at export time — editing intervals later never silently changes what you billed.
 
 ## Data safety
 

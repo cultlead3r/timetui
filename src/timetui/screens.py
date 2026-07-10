@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from rich.markup import escape
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
+    DataTable,
     Input,
     Label,
     ProgressBar,
@@ -21,7 +24,8 @@ from textual.widgets import (
     Static,
 )
 
-from .models import Interval
+from .invoices import Invoice, Payment
+from .models import Interval, format_amount
 
 LOCAL_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
@@ -375,8 +379,13 @@ class VimRadioSet(RadioSet):
 class ReportScreen(ModalScreen["dict | None"]):
     """Configure and trigger report generation.
 
-    Returns ``{"style", "format", "rate", "path", "open_after"}`` (path kept as
-    typed, e.g. ``~/...``; the caller expands it) or None if cancelled.
+    Returns ``{"style", "format", "rate", "path", "open_after", "invoice_id"}``
+    (path kept as typed, e.g. ``~/...``; the caller expands it) or None if
+    cancelled. ``invoice_id`` is the ID to record the export as in the invoice
+    ledger (see ``invoices.py``), or ``None`` when the "Record invoice" box is
+    unchecked. ``default_invoice_id`` pre-fills the (always editable) ID field
+    with the app's suggestion; ``taken_ids`` are existing ledger IDs, rejected
+    on save so an invoice number is never reused.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -387,11 +396,15 @@ class ReportScreen(ModalScreen["dict | None"]):
         count: int,
         default_path: str = "~/timetui-report.html",
         default_rate: float = 0.0,
+        default_invoice_id: str = "",
+        taken_ids: "frozenset[str] | set[str]" = frozenset(),
     ) -> None:
         super().__init__()
         self._count = count
         self._default_path = default_path
         self._default_rate = default_rate
+        self._default_invoice_id = default_invoice_id
+        self._taken_ids = set(taken_ids)
 
     def compose(self) -> ComposeResult:
         label = "entry" if self._count == 1 else "entries"
@@ -412,6 +425,14 @@ class ReportScreen(ModalScreen["dict | None"]):
             yield Label("Hourly rate  (blank = no amount)")
             rate_value = f"{self._default_rate:g}" if self._default_rate > 0 else ""
             yield Input(value=rate_value, placeholder="e.g. 100", id="rate-input")
+            with Horizontal(id="invoice-row"):
+                yield Checkbox("Record invoice", value=False, id="invoice-checkbox")
+                yield Input(
+                    value=self._default_invoice_id,
+                    placeholder="e.g. LA-2026-003",
+                    id="invoice-input",
+                    disabled=True,
+                )
             yield Label("Output file")
             yield Input(value=self._default_path, id="path-input")
             yield Checkbox("Open when done", value=True, id="open-checkbox")
@@ -435,6 +456,11 @@ class ReportScreen(ModalScreen["dict | None"]):
                 base = base[: -len(known)]
                 break
         inp.value = f"{base}.{ext}"
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """The invoice-ID field is only editable while "Record invoice" is on."""
+        if event.checkbox.id == "invoice-checkbox":
+            self.query_one("#invoice-input", Input).disabled = not event.value
 
     def _selected(self, set_id: str) -> str:
         pressed = self.query_one(f"#{set_id}", RadioSet).pressed_button
@@ -470,6 +496,21 @@ class ReportScreen(ModalScreen["dict | None"]):
             if rate < 0:
                 err.update("Hourly rate must not be negative")
                 return
+        invoice_id: str | None = None
+        if self.query_one("#invoice-checkbox", Checkbox).value:
+            invoice_id = self.query_one("#invoice-input", Input).value.strip()
+            if not invoice_id:
+                err.update("Invoice ID is required to record an invoice")
+                return
+            if any(ch.isspace() for ch in invoice_id):
+                err.update("Invoice ID must not contain spaces (it becomes a tag)")
+                return
+            if invoice_id in self._taken_ids:
+                err.update(f"Invoice {invoice_id} already exists in the ledger")
+                return
+            if rate <= 0:
+                err.update("Recording an invoice requires an hourly rate")
+                return
         self.dismiss(
             {
                 "style": self._selected("style-set"),
@@ -477,6 +518,7 @@ class ReportScreen(ModalScreen["dict | None"]):
                 "rate": rate,
                 "path": path,
                 "open_after": self.query_one("#open-checkbox", Checkbox).value,
+                "invoice_id": invoice_id,
             }
         )
 
@@ -599,6 +641,269 @@ class TextReportScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class PaymentScreen(ModalScreen["dict | None"]):
+    """Record one payment against an invoice.
+
+    Returns ``{"amount", "date", "note"}`` (amount ``float``, date a local ISO
+    string) or None if cancelled. The amount pre-fills with the outstanding
+    balance — the common "paid in full" case is just Enter — and the date with
+    today. Negative amounts are allowed (refunds / adjustments); zero is not.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, invoice_id: str, balance: float) -> None:
+        super().__init__()
+        self._invoice_id = invoice_id
+        self._balance = balance
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(
+                f"Record payment — {self._invoice_id}", classes="dialog-title"
+            )
+            yield Label(f"Amount  (balance {format_amount(self._balance)})")
+            amount_value = f"{self._balance:.2f}" if self._balance > 0 else ""
+            yield Input(value=amount_value, placeholder="e.g. 500", id="amount-input")
+            yield Label("Date  (YYYY-MM-DD)")
+            yield Input(value=datetime.now().strftime("%Y-%m-%d"), id="date-input")
+            yield Label("Note  (optional)")
+            yield Input(placeholder="e.g. wire ref 123", id="note-input")
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Record", variant="success", id="save")
+                yield Button("Cancel", variant="primary", id="cancel")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#amount-input", Input)
+        inp.focus()
+        inp.cursor_position = len(inp.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_save()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.action_save()
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        err = self.query_one("#error", Static)
+        raw = (
+            self.query_one("#amount-input", Input)
+            .value.strip()
+            .lstrip("$")
+            .replace(",", "")
+        )
+        try:
+            amount = float(raw)
+        except ValueError:
+            err.update("Payment amount must be a number")
+            return
+        if amount == 0:
+            err.update("Payment amount must not be zero")
+            return
+        date_raw = self.query_one("#date-input", Input).value.strip()
+        if not date_raw:
+            date_raw = datetime.now().strftime("%Y-%m-%d")
+        try:
+            datetime.strptime(date_raw, "%Y-%m-%d")
+        except ValueError:
+            err.update(f"Bad date: {date_raw!r}  (use YYYY-MM-DD)")
+            return
+        self.dismiss(
+            {
+                "amount": amount,
+                "date": date_raw,
+                "note": self.query_one("#note-input", Input).value.strip(),
+            }
+        )
+
+
+class InvoicesScreen(ModalScreen[bool]):
+    """Browse the invoice ledger: amount / paid / balance / status per invoice,
+    with the highlighted invoice's payment history below the table.
+
+    ``p`` records a payment (opens :class:`PaymentScreen`), ``x`` deletes an
+    invoice (confirmed). The list passed in is mutated in place; the screen
+    dismisses ``True`` when it changed, so the app knows to save the ledger.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("q", "close", "Close"),
+        Binding("p", "payment", "Record payment"),
+        Binding("x", "delete", "Delete invoice"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    STATUS_STYLE = {"paid": "green", "partial": "yellow", "unpaid": "red"}
+    COLUMN_LABELS = ("Invoice", "Date", "Hours", "Amount", "Paid", "Balance", "Status")
+
+    def __init__(self, invoices: "list[Invoice]") -> None:
+        super().__init__()
+        self._invoices = invoices  # mutated in place; True on dismiss = changed
+        self._changed = False
+        self._order: list[Invoice] = []  # table rows, newest first
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="invoices-dialog"):
+            yield Static("Invoices", classes="dialog-title")
+            yield DataTable(
+                id="invoices-table", cursor_type="row", zebra_stripes=True
+            )
+            yield Static(id="invoice-summary")
+            yield Static(id="invoice-detail")
+            yield Static(
+                "p  record payment     x  delete invoice     esc / q  close",
+                classes="hint",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#invoice-detail", Static).border_title = "Payments"
+        self._refresh()
+        self.query_one("#invoices-table", DataTable).focus()
+
+    def _refresh(self, keep_id: str | None = None) -> None:
+        """Rebuild the rows (newest first), keeping the cursor on ``keep_id``.
+
+        Columns are re-created with explicit widths sized to the widest cell
+        (never below the header) on every refresh: a DataTable's auto widths are
+        computed once and go stale when a refresh replaces cells with wider
+        content (e.g. paid ``$0.00`` -> ``$2,010.00``, ``unpaid`` -> ``partial``
+        after recording a payment), which visibly truncated values.
+        """
+        table = self.query_one("#invoices-table", DataTable)
+        self._order = sorted(
+            self._invoices, key=lambda inv: (inv.date, inv.id), reverse=True
+        )
+        rows: list[tuple[Text, ...]] = []
+        for inv in self._order:
+            style = self.STATUS_STYLE.get(inv.status, "")
+            rows.append(
+                (
+                    Text(inv.id, style="bold"),
+                    Text(inv.date),
+                    Text(f"{inv.hours:.2f}h"),
+                    Text(format_amount(inv.amount)),
+                    Text(format_amount(inv.paid)),
+                    Text(format_amount(inv.balance), style=style),
+                    Text(inv.status, style=style),
+                )
+            )
+        table.clear(columns=True)
+        for index, label in enumerate(self.COLUMN_LABELS):
+            width = max(
+                (cells[index].cell_len for cells in rows), default=0
+            )
+            table.add_column(label, width=max(width, len(label)))
+        for cells in rows:
+            table.add_row(*cells)
+        if table.row_count:
+            target = 0
+            if keep_id is not None:
+                for index, inv in enumerate(self._order):
+                    if inv.id == keep_id:
+                        target = index
+                        break
+            table.move_cursor(row=min(target, table.row_count - 1))
+        self._update_summary()
+        self._update_detail()
+
+    def _current(self) -> "Invoice | None":
+        row = self.query_one("#invoices-table", DataTable).cursor_row
+        if 0 <= row < len(self._order):
+            return self._order[row]
+        return None
+
+    def _update_summary(self) -> None:
+        invoiced = sum(inv.amount for inv in self._invoices)
+        paid = sum(inv.paid for inv in self._invoices)
+        outstanding = sum(inv.balance for inv in self._invoices if inv.status != "paid")
+        self.query_one("#invoice-summary", Static).update(
+            f"\u03a3 invoiced [b]{format_amount(invoiced)}[/b]"
+            f"    paid [green]{format_amount(paid)}[/green]"
+            f"    outstanding [red][b]{format_amount(outstanding)}[/b][/red]"
+        )
+
+    def _update_detail(self) -> None:
+        box = self.query_one("#invoice-detail", Static)
+        inv = self._current()
+        if inv is None:
+            box.update(
+                "[dim]no invoices yet — press R and check "
+                "\u201cRecord invoice\u201d when exporting a report[/dim]"
+            )
+            return
+        style = self.STATUS_STYLE.get(inv.status, "")
+        lines = [
+            f"[b]{escape(inv.id)}[/b]  {inv.date}  \u2014  {inv.hours:.2f}h "
+            f"\u00d7 ${inv.rate:g}/h = {format_amount(inv.amount)} {escape(inv.currency)}"
+        ]
+        if inv.payments:
+            for p in sorted(inv.payments, key=lambda p: p.date):
+                note = f"  [dim]{escape(p.note)}[/dim]" if p.note else ""
+                lines.append(f"  {p.date}  {format_amount(p.amount)}{note}")
+        else:
+            lines.append("  [dim]no payments recorded[/dim]")
+        lines.append(
+            f"balance [b][{style}]{format_amount(inv.balance)}[/{style}][/b] "
+            f"([{style}]{inv.status}[/{style}])"
+        )
+        box.update("\n".join(lines))
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._update_detail()
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#invoices-table", DataTable).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#invoices-table", DataTable).action_cursor_up()
+
+    @work
+    async def action_payment(self) -> None:
+        inv = self._current()
+        if inv is None:
+            return
+        result = await self.app.push_screen_wait(PaymentScreen(inv.id, inv.balance))
+        if not result:
+            return
+        inv.payments.append(
+            Payment(date=result["date"], amount=result["amount"], note=result["note"])
+        )
+        self._changed = True
+        self._refresh(keep_id=inv.id)
+
+    @work
+    async def action_delete(self) -> None:
+        inv = self._current()
+        if inv is None:
+            return
+        confirmed = await self.app.push_screen_wait(
+            ConfirmScreen(
+                f"Delete invoice {inv.id} from the ledger?\n"
+                f"{format_amount(inv.amount)}, {len(inv.payments)} payment(s) "
+                "recorded. Interval tags are not touched.",
+                confirm_label="Delete",
+            )
+        )
+        if not confirmed:
+            return
+        self._invoices.remove(inv)
+        self._changed = True
+        self._refresh()
+
+    def action_close(self) -> None:
+        self.dismiss(self._changed)
+
+
 class HelpScreen(ModalScreen[None]):
     """Keybinding cheatsheet."""
 
@@ -631,6 +936,11 @@ class HelpScreen(ModalScreen[None]):
   Σ in status bar = total of the filtered set (Hh Mm + decimal)
   sidebar shows totals grouped by tag-set
   set an hourly rate in config -> live $ amounts per tag-set and at the Σ
+
+[b]Invoices[/b]
+  R    "Record invoice" in the report dialog snapshots the amount into the
+       ledger and retags the intervals (new -> invoiced + the invoice ID)
+  I    invoice ledger: amount / paid / balance   p  payment   x  delete
 
 [b]Edit[/b] (Time Warrior)
   a    annotate            t / T   add / remove tag

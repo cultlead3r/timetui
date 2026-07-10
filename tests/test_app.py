@@ -3,15 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
 import pytest
 
-from textual.widgets import Input, RadioButton, SelectionList, Static
+from textual.widgets import (
+    Checkbox,
+    DataTable,
+    Input,
+    RadioButton,
+    SelectionList,
+    Static,
+)
 
-from timetui import report, timew
+from timetui import invoices, report, timew
+from timetui import app as app_module
 from timetui.app import TAGS_GAP, TAGS_MAX, TimewApp
+from timetui.invoices import Invoice, Payment
 from timetui.models import Interval
-from timetui.screens import ColumnsScreen, ReportScreen, TextReportScreen, VimRadioSet
+from timetui.screens import (
+    ColumnsScreen,
+    InvoicesScreen,
+    PaymentScreen,
+    ReportScreen,
+    TextReportScreen,
+    VimRadioSet,
+)
 
 # Fixed, all-completed intervals -> deterministic durations/totals for snapshots.
 RAW = [
@@ -42,6 +59,9 @@ class SnapApp(TimewApp):
 def fixed_intervals(monkeypatch):
     fixtures = [Interval.from_export(r) for r in RAW]
     monkeypatch.setattr(timew, "load_intervals", lambda: list(fixtures))
+    # Pin "today" so the report dialog's suggested invoice ID (…-{year}-001)
+    # stays deterministic in snapshots regardless of the real date.
+    monkeypatch.setattr(app_module, "_today", lambda: date(2026, 3, 13))
     return fixtures
 
 
@@ -302,6 +322,232 @@ def test_no_rate_means_no_dollar_amounts(fixed_intervals):
             assert app.brand.rate == 0.0
             assert "$" not in str(app.query_one("#status", Static).content)
             assert "$" not in str(app.query_one("#breakdown", Static).content)
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Invoice ledger (record from the report dialog, browse/pay with I)
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def ledger_fixture():
+    """A fixed ledger (paid / partial / unpaid) written to the isolated path."""
+    ledger = [
+        Invoice(id="LA-2026-001", date="2026-01-15", hours=6.5, rate=200.0,
+                amount=1300.0,
+                payments=[Payment(date="2026-01-20", amount=500.0,
+                                  note="wire ref 123")]),
+        Invoice(id="B-2026-001", date="2026-02-01", hours=2.0, rate=150.0,
+                amount=300.0,
+                payments=[Payment(date="2026-02-10", amount=300.0)]),
+        Invoice(id="LA-2026-002", date="2026-03-01", hours=4.0, rate=200.0,
+                amount=800.0),
+    ]
+    invoices.save_ledger(invoices.ledger_path(), ledger)
+    return ledger
+
+
+def test_snapshot_invoices_screen(snap_compare, fixed_intervals, ledger_fixture):
+    # 'I' opens the ledger: per-invoice amount/paid/balance/status, Σ summary,
+    # and the highlighted invoice's payment history below.
+    assert snap_compare(SnapApp(), terminal_size=(120, 35), press=["I"])
+
+
+def test_report_dialog_suggests_client_invoice_id(rated_intervals):
+    """The R dialog pre-fills {Client}-{year}-{seq} from the targets' shared tag."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # Narrow to the LA+new intervals -> unambiguous client 'LA'.
+            await pilot.press("slash", *list("la new"), "enter")
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            inp = app.screen.query_one("#invoice-input", Input)
+            assert inp.value == "LA-2026-001"  # _today pinned to 2026-03-13
+            assert inp.disabled  # editable only once "Record invoice" is checked
+
+    asyncio.run(scenario())
+
+
+def test_report_records_invoice_and_retags(rated_intervals, tmp_path, monkeypatch):
+    """Recording an invoice saves the ledger snapshot and retags the intervals:
+    one atomic tag (invoiced + the invoice ID), one atomic untag of 'new'."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("slash", *list("la new"), "enter")
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            screen = app.screen
+            screen.query_one("#open-checkbox", Checkbox).value = False
+            screen.query_one("#invoice-checkbox", Checkbox).value = True
+            await pilot.pause()
+            assert not screen.query_one("#invoice-input", Input).disabled
+            screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            # targets oldest-first: @8 (Mar 8) then @7 (Mar 11), both LA+new
+            assert calls[0] == ["tag", "@8", "@7", "invoiced", "LA-2026-001"]
+            assert calls[1] == ["untag", "@8", "@7", "new"]
+            ledger = invoices.load_ledger(invoices.ledger_path())
+            assert [inv.id for inv in ledger] == ["LA-2026-001"]
+            assert ledger[0].date == "2026-03-13"  # pinned _today
+            assert ledger[0].hours == pytest.approx(1.25)  # 45m + 30m
+            assert ledger[0].rate == 200.0
+            assert ledger[0].amount == pytest.approx(250.0)
+            assert ledger[0].status == "unpaid"
+            assert (tmp_path / "timetui-report.html").exists()
+
+    asyncio.run(scenario())
+
+
+def test_backfill_invoice_from_already_invoiced_intervals(tmp_path, monkeypatch):
+    """Recording works for intervals already tagged `invoiced` (backfilling an
+    invoice sent outside the normal workflow): the client is still derived (the
+    `invoiced` workflow tag is ignored), re-tagging `invoiced` is a harmless
+    timew no-op (verified against a sandbox db), and with no `new` tag present
+    only ONE timew call is issued."""
+    raw = [
+        {"id": 2, "start": "20260308T090000Z", "end": "20260308T100000Z",
+         "tags": ["LA", "invoiced"], "annotation": "already billed work"},
+        {"id": 1, "start": "20260311T120000Z", "end": "20260311T123000Z",
+         "tags": ["LA", "invoiced"], "annotation": "more billed work"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    monkeypatch.setattr(app_module, "_today", lambda: date(2026, 3, 13))
+    monkeypatch.setattr(
+        report,
+        "load_brand_config",
+        lambda *a, **k: report.BrandConfig(rate=200.0, currency="USD"),
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            screen = app.screen
+            # `invoiced` is a workflow tag -> the client 'LA' is still derived
+            assert screen.query_one("#invoice-input", Input).value == "LA-2026-001"
+            screen.query_one("#open-checkbox", Checkbox).value = False
+            screen.query_one("#invoice-checkbox", Checkbox).value = True
+            await pilot.pause()
+            screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if calls:
+                    break
+            # one atomic tag call only — nothing carries `new`, so no untag
+            assert calls == [["tag", "@2", "@1", "invoiced", "LA-2026-001"]]
+            ledger = invoices.load_ledger(invoices.ledger_path())
+            assert [inv.id for inv in ledger] == ["LA-2026-001"]
+            assert ledger[0].hours == pytest.approx(1.5)  # 1h + 30m
+            assert ledger[0].amount == pytest.approx(300.0)
+
+    asyncio.run(scenario())
+
+
+def test_invoice_payment_flow_persists(fixed_intervals):
+    """I -> p records a partial payment; closing the screen saves the ledger."""
+    path = invoices.ledger_path()
+    invoices.save_ledger(
+        path,
+        [Invoice(id="LA-2026-001", date="2026-01-15", hours=5.0, rate=200.0,
+                 amount=1000.0)],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, InvoicesScreen):
+                    break
+            assert isinstance(app.screen, InvoicesScreen)
+            await pilot.press("p")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, PaymentScreen):
+                    break
+            assert isinstance(app.screen, PaymentScreen)
+            # amount pre-fills with the full balance; pay only part of it
+            assert app.screen.query_one("#amount-input", Input).value == "1000.00"
+            app.screen.query_one("#amount-input", Input).value = "400"
+            app.screen.query_one("#note-input", Input).value = "wire ref 9"
+            app.screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, InvoicesScreen):
+                    break
+            # regression: the refreshed columns must fit the new, wider cells
+            # ('$0.00' -> '$400.00', 'unpaid' -> 'partial') — stale auto widths
+            # used to truncate them.
+            table = app.screen.query_one("#invoices-table", DataTable)
+            widths = {
+                str(col.label): col.width for col in table.columns.values()
+            }
+            assert widths["Paid"] >= len("$400.00")
+            assert widths["Status"] >= len("partial")
+            await pilot.press("q")  # close -> the app saves the changed ledger
+            for _ in range(40):
+                await pilot.pause(0.05)
+                saved = invoices.load_ledger(path)
+                if saved and saved[0].payments:
+                    break
+            saved = invoices.load_ledger(path)
+            assert saved[0].paid == 400.0
+            assert saved[0].balance == 600.0
+            assert saved[0].status == "partial"
+            assert saved[0].payments[0].note == "wire ref 9"
+
+    asyncio.run(scenario())
+
+
+def test_report_dialog_rejects_taken_invoice_id(rated_intervals, ledger_fixture):
+    """An invoice ID already in the ledger is rejected (never reused)."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            screen = app.screen
+            screen.query_one("#invoice-checkbox", Checkbox).value = True
+            await pilot.pause()
+            screen.query_one("#invoice-input", Input).value = "LA-2026-001"
+            screen.action_save()
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)  # not dismissed
+            err = str(screen.query_one("#error", Static).content)
+            assert "already exists" in err
 
     asyncio.run(scenario())
 

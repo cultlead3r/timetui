@@ -151,6 +151,23 @@ ModalScreen {
     border: none;
 }
 
+/* "Record invoice" checkbox + invoice-ID input share one row so the report
+   dialog stays short enough for small terminals. */
+#invoice-row {
+    height: 3;
+    align-vertical: middle;
+}
+
+#invoice-row Checkbox {
+    width: auto;
+    margin: 0 1 0 0;
+}
+
+#invoice-row Input {
+    width: 1fr;
+    margin-bottom: 0;
+}
+
 #dialog Label {
     color: $text-muted;
 }
@@ -185,6 +202,38 @@ ModalScreen {
 #help-body {
     height: auto;
     margin-bottom: 1;
+}
+
+/* ----- invoice ledger modal ----- */
+#invoices-dialog {
+    width: 96;
+    max-width: 98%;
+    height: auto;
+    max-height: 92%;
+    padding: 1 2;
+    border: thick $accent;
+    background: $surface;
+}
+
+#invoices-table {
+    width: 100%;
+    height: auto;
+    max-height: 14;
+    margin-bottom: 1;
+    background: $panel;
+}
+
+#invoice-summary {
+    margin-bottom: 1;
+}
+
+#invoice-detail {
+    width: 100%;
+    height: auto;
+    border: round $primary;
+    border-title-align: left;
+    border-title-color: $primary;
+    padding: 0 1;
 }
 
 /* ----- one-time PDF-engine (Chromium) download modal ----- */

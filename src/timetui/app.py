@@ -8,7 +8,7 @@ import subprocess
 import sys
 import textwrap
 from collections import namedtuple
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from rich.text import Text
@@ -21,7 +21,7 @@ from textual.fuzzy import FuzzySearch
 from textual.theme import Theme
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
-from . import report, timew
+from . import invoices, report, timew
 from .models import (
     Interval,
     billing_amount,
@@ -34,6 +34,7 @@ from .screens import (
     ConfirmScreen,
     DownloadScreen,
     HelpScreen,
+    InvoicesScreen,
     NewIntervalScreen,
     ReportScreen,
     TagRemoveScreen,
@@ -41,6 +42,11 @@ from .screens import (
     TextReportScreen,
     TimeEditScreen,
 )
+
+
+def _today() -> date:
+    """Today's local date (module-level so tests can pin it for determinism)."""
+    return date.today()
 
 # Neon palette (cyberpunk / Posting-ish)
 NEON_CYAN = "#22d3ee"
@@ -159,6 +165,7 @@ class TimewApp(App):
         Binding("c", "continue_interval", "Continue"),
         Binding("u", "undo", "Undo"),
         Binding("R", "report", "Report"),
+        Binding("I", "invoices", "Invoices"),
         # view
         Binding("w", "toggle_wrap", "Wrap"),
         Binding("f", "toggle_sidebar", "Sidebar"),
@@ -984,8 +991,19 @@ class TimewApp(App):
         if not targets:
             self.notify("Nothing to report", severity="warning", timeout=3)
             return
+        # Suggest an invoice ID from the ledger + the targets' shared client tag
+        # (e.g. LA-2026-003); the dialog's ID field is editable either way.
+        ledger_file = invoices.ledger_path()
+        ledger = invoices.load_ledger(ledger_file)
+        taken = {inv.id for inv in ledger}
+        client = invoices.derive_client([iv.tags for iv in targets], taken)
         result = await self.push_screen_wait(
-            ReportScreen(count=len(targets), default_rate=self.brand.rate)
+            ReportScreen(
+                count=len(targets),
+                default_rate=self.brand.rate,
+                default_invoice_id=invoices.next_invoice_id(ledger, client, _today()),
+                taken_ids=taken,
+            )
         )
         if not result:
             return
@@ -1012,11 +1030,86 @@ class TimewApp(App):
             self.notify(str(exc), title="Report failed", severity="error", timeout=10)
             return
         self.notify(f"Wrote {out}", severity="information", timeout=5)
+        if result["invoice_id"]:
+            self._record_invoice(targets, result["invoice_id"], result["rate"],
+                                 ledger, ledger_file)
         if result["format"] == "text":
             # Preview the text invoice in-app (the "console" output).
             await self.push_screen_wait(TextReportScreen(out.read_text(), path=out))
         elif result["open_after"]:
             self._open_file(out)
+
+    def _record_invoice(
+        self,
+        targets: list[Interval],
+        invoice_id: str,
+        rate: float,
+        ledger: list[invoices.Invoice],
+        ledger_file: Path,
+    ) -> None:
+        """Snapshot an exported report into the ledger and retag its intervals.
+
+        The recorded amount is exactly what the report shows (open intervals
+        billed up to now). The retag is two timew calls — one atomic ``tag``
+        adding ``invoiced`` + the invoice ID to every target, and one atomic
+        ``untag`` dropping ``new`` from the targets that carry it (so ``u``
+        undoes it in two steps). Both are tag-only operations, which never
+        reorder intervals, so the @ids stay valid between the two calls. A
+        failed ledger write aborts before any retag, so the tags never claim an
+        invoice that was not recorded.
+        """
+        now = datetime.now(timezone.utc)
+        total = sum((iv.duration(now) for iv in targets), timedelta())
+        amount = billing_amount(total, rate)
+        ledger.append(
+            invoices.Invoice(
+                id=invoice_id,
+                date=_today().isoformat(),
+                hours=total.total_seconds() / 3600.0,
+                rate=rate,
+                amount=amount,
+                currency=self.brand.currency,
+            )
+        )
+        try:
+            invoices.save_ledger(ledger_file, ledger)
+        except OSError as exc:
+            self.notify(f"Could not save invoice ledger: {exc}",
+                        title="Invoice not recorded", severity="error", timeout=10)
+            return
+        keep = self.current_interval()
+        ids = [iv.id for iv in targets]
+        with_new = [iv.id for iv in targets if "new" in iv.tags]
+        try:
+            timew.execute(timew.args_tag_many(ids, ["invoiced", invoice_id]))
+            if with_new:
+                timew.execute(timew.args_untag_many(with_new, ["new"]))
+        except timew.TimewError as exc:
+            self.notify(exc.message or str(exc), title="timew error",
+                        severity="error", timeout=8)
+            self.reload()
+            return
+        self.notify(
+            f"Recorded invoice {invoice_id} ({format_amount(amount)}) — "
+            f"retagged {len(ids)} {'entry' if len(ids) == 1 else 'entries'}",
+            severity="information",
+            timeout=5,
+        )
+        self.reload(preserve_start=keep.start if keep else None)
+
+    @work
+    async def action_invoices(self) -> None:
+        """Open the invoice ledger; save it back if the screen changed it."""
+        ledger_file = invoices.ledger_path()
+        ledger = invoices.load_ledger(ledger_file)
+        changed = await self.push_screen_wait(InvoicesScreen(ledger))
+        if not changed:
+            return
+        try:
+            invoices.save_ledger(ledger_file, ledger)
+        except OSError as exc:
+            self.notify(f"Could not save invoice ledger: {exc}",
+                        title="Ledger not saved", severity="error", timeout=10)
 
     def _open_file(self, path: Path) -> None:
         """Open ``path`` with the platform's default handler (best effort)."""
