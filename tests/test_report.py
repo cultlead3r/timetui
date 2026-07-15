@@ -27,6 +27,12 @@ LATER = Interval.from_export(
 ACTIVE = Interval.from_export(
     {"id": 1, "start": "20260312T060000Z", "tags": ["b"], "annotation": "ongoing"}
 )
+# A fixed expense: the synthetic 1-minute interval the `E` action creates.
+EXPENSE = Interval.from_export(
+    {"id": 4, "start": "20260310T080000Z", "end": "20260310T080100Z",
+     "tags": ["LA", "expense", "cost:450.00", "new"],
+     "annotation": "Flight SFO-NRT"}
+)
 
 GEN = "January 01, 2026"  # pinned so the header is deterministic
 
@@ -124,6 +130,52 @@ def test_amount_has_currency_label():
     html = report.render_report_html([EARLIER, LATER], rate=100, generated=GEN)
     assert "Amount Due (USD)" in html
     assert "$250.00 USD" in html
+
+
+def test_render_expense_itemized_and_excluded_from_hours():
+    # The expense is its own row (description + fixed amount, em-dash time cell);
+    # its synthetic minute never counts toward the hours Total.
+    html = report.render_report_html([EARLIER, LATER, EXPENSE], rate=100, generated=GEN)
+    assert "Flight SFO-NRT" in html
+    assert "$450.00" in html
+    assert "\u2014" in html  # em-dash time cell for the expense row
+    assert "2h 30m" in html  # hours Total unchanged by the expense
+    # Expenses subtotal row + combined Amount Due (2.5h × $100 + $450).
+    assert ">Expenses</td>" in html
+    assert "2.50h \u00d7 $100.00/h + $450.00 expenses" in html
+    assert "$700.00 USD" in html
+
+
+def test_render_expense_only_amount_due_without_rate():
+    # An expense-only report (no hourly rate) still shows an Amount Due.
+    html = report.render_report_html([EXPENSE], generated=GEN)
+    assert ">Expenses</td>" in html
+    assert "Amount Due (USD)" in html
+    assert "$450.00 USD" in html
+    assert "0h 00m" in html  # hours Total is zero
+
+
+def test_render_no_expense_rows_without_expenses():
+    html = report.render_report_html([EARLIER, LATER], rate=100, generated=GEN)
+    assert ">Expenses</td>" not in html
+    assert "expenses" not in html  # no mention anywhere (label only appears with costs)
+
+
+def test_render_text_itemizes_expenses():
+    text = report.render_report_text([EARLIER, LATER, EXPENSE], rate=100, generated=GEN)
+    assert "Flight SFO-NRT" in text
+    assert "$450.00" in text
+    assert "Expenses" in text
+    assert "2h 30m" in text  # hours Total unchanged
+    assert "2.50h \u00d7 $100.00/h + $450.00 expenses" in text
+    assert "$700.00 USD" in text
+    assert max(len(line) for line in text.splitlines()) <= 76
+
+
+def test_render_text_expense_only_amount_due_without_rate():
+    text = report.render_report_text([EXPENSE], generated=GEN)
+    assert "Amount Due (USD)" in text
+    assert "$450.00 USD" in text
 
 
 def test_tagline_is_present_on_every_variant():

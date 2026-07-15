@@ -37,8 +37,11 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from .models import COST_PREFIX, EXPENSE_TAG
+
 # Tags that mark workflow state (new -> invoiced -> paid), not a client —
-# never a client prefix candidate.
+# never a client prefix candidate. The expense marker is workflow-like too:
+# an expense-only report must still guess the client from the client tag.
 WORKFLOW_TAGS = frozenset({"new", "invoiced", "paid"})
 # Half a cent: float dust from hours × rate never flips paid/partial status.
 PAID_EPSILON = 0.005
@@ -98,10 +101,11 @@ def derive_client(
     """Guess the client prefix for a new invoice from the covered intervals.
 
     Takes the tags **common to all** ``tag_sets``, drops workflow tags
-    (:data:`WORKFLOW_TAGS`, case-insensitive) and anything that is an existing
-    invoice ID (``taken_ids``, e.g. a previous invoice's tag). Exactly one tag
-    surviving means an unambiguous client; zero or several means no guess
-    (returns ``""`` and the user types the prefix themselves).
+    (:data:`WORKFLOW_TAGS`, case-insensitive), expense bookkeeping tags
+    (``expense`` and ``cost:...`` — see ``models``) and anything that is an
+    existing invoice ID (``taken_ids``, e.g. a previous invoice's tag). Exactly
+    one tag surviving means an unambiguous client; zero or several means no
+    guess (returns ``""`` and the user types the prefix themselves).
     """
     sets = [set(ts) for ts in tag_sets]
     if not sets:
@@ -109,7 +113,12 @@ def derive_client(
     common = set.intersection(*sets)
     taken = set(taken_ids)
     candidates = {
-        t for t in common if t.lower() not in WORKFLOW_TAGS and t not in taken
+        t
+        for t in common
+        if t.lower() not in WORKFLOW_TAGS
+        and t.lower() != EXPENSE_TAG
+        and not t.startswith(COST_PREFIX)
+        and t not in taken
     }
     if len(candidates) == 1:
         return candidates.pop()

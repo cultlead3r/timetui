@@ -105,6 +105,17 @@ def test_derive_client_empty_inputs():
     assert invoices.derive_client([["new"], ["new"]]) == ""
 
 
+def test_derive_client_drops_expense_bookkeeping_tags():
+    # An expense-only report must still guess the client: the `expense` marker
+    # and per-item `cost:` tags are never client candidates even when common to
+    # every set (a single expense, or several with the same amount).
+    tag_sets = [["LA", "expense", "cost:450.00", "new"],
+                ["LA", "expense", "cost:450.00", "new"]]
+    assert invoices.derive_client(tag_sets) == "LA"
+    # The marker is dropped case-insensitively, like the workflow tags.
+    assert invoices.derive_client([["LA", "Expense"], ["LA", "Expense"]]) == "LA"
+
+
 def test_derive_client_drops_paid_workflow_tag():
     # backfilling already-settled work ({LA, paid}) still derives the client
     assert invoices.derive_client([["LA", "paid"], ["LA", "paid"]]) == "LA"

@@ -25,7 +25,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Sequence
 
-from .models import Interval
+from .models import Interval, expense_amount
 
 
 def _clean_svg(text: str) -> str:
@@ -653,6 +653,12 @@ def render_report_text(
     Columns are fixed-width and long descriptions wrap within their column;
     separator lines use ``-`` / ``=``. ``generated`` defaults to today's local
     date when empty (a parameter so tests can pin it).
+
+    Expense intervals (a ``cost:`` tag — see ``models.expense_amount``) are
+    itemized with their fixed amount in the Duration column and an empty Time
+    column; they never count toward the hours Total. When any exist, an
+    ``Expenses`` subtotal line follows the Total and the Amount Due becomes
+    ``hours x rate + expenses`` (shown even when ``rate`` is 0).
     """
     if not generated:
         from datetime import datetime
@@ -674,12 +680,19 @@ def render_report_text(
     out.append(rule)
 
     total = timedelta()
+    expenses = 0.0
     for iv in sorted(intervals, key=lambda i: i.start):
         start = iv.start_local
         start_date = start.strftime("%Y-%m-%d")
         start_time = start.strftime("%H:%M")
         end = iv.end_local
-        if end is not None:
+        cost = expense_amount(iv.tags)
+        if cost is not None:
+            # Fixed expense: amount instead of a duration, no time-of-day.
+            expenses += cost
+            time_range = ""
+            duration_str = f"${cost:,.2f}"
+        elif end is not None:
             time_range = f"{start_time} - {end.strftime('%H:%M')}"
             dur = iv.duration()
             total += dur
@@ -696,11 +709,18 @@ def render_report_text(
 
     out.append(rule)
     out.append(row("", "", "Total", _hours_minutes(total.total_seconds())))
+    if expenses > 0:
+        out.append(row("", "", "Expenses", f"${expenses:,.2f}"))
 
-    if rate and rate > 0:
+    if (rate and rate > 0) or expenses > 0:
         hours = total.total_seconds() / 3600.0
-        amount = hours * rate
-        label = f"Amount Due ({brand.currency}):  {hours:.2f}h \u00d7 ${rate:,.2f}/h"
+        amount = hours * rate + expenses
+        breakdown = []
+        if rate and rate > 0:
+            breakdown.append(f"{hours:.2f}h \u00d7 ${rate:,.2f}/h")
+        if expenses > 0:
+            breakdown.append(f"${expenses:,.2f} expenses")
+        label = f"Amount Due ({brand.currency}):  " + " + ".join(breakdown)
         value = f"${amount:,.2f} {brand.currency}"
         gap = width - len(label) - len(value)
         out.append("")
@@ -744,6 +764,12 @@ def render_report_html(
     empty it defaults to today's local date (kept as a parameter so callers/tests
     can pin it for determinism). When ``rate`` is greater than 0 an "Amount Due"
     row (decimal hours times the hourly ``rate``) is appended to every style.
+
+    Expense intervals (a ``cost:`` tag — see ``models.expense_amount``) are
+    itemized with their fixed amount in the Duration column and an em-dash Time
+    cell; they never count toward the hours Total. When any exist, an
+    "Expenses" subtotal row follows the Total and the Amount Due becomes
+    ``hours × rate + expenses`` (rendered even when ``rate`` is 0).
     """
     if style not in STYLES:
         raise ValueError(f"unknown style {style!r} (expected one of {STYLES})")
@@ -758,13 +784,21 @@ def render_report_html(
     styles = _build_styles(style, fmt)
 
     total = timedelta()
+    expenses = 0.0
     rows = ""
     for iv in sorted(intervals, key=lambda i: i.start):
         start = iv.start_local
         start_date = start.strftime("%Y-%m-%d")
         start_time = start.strftime("%H:%M")
         end = iv.end_local
-        if end is not None:
+        cost = expense_amount(iv.tags)
+        if cost is not None:
+            # Fixed expense: amount instead of a duration, no time-of-day.
+            expenses += cost
+            date_str = start_date
+            time_range = "\u2014"
+            duration_str = f"${cost:,.2f}"
+        elif end is not None:
             end_date = end.strftime("%Y-%m-%d")
             end_time = end.strftime("%H:%M")
             if start_date != end_date:
@@ -793,12 +827,24 @@ def render_report_html(
     total_hours = total.total_seconds() / 3600.0
 
     amount_rows = ""
-    if rate and rate > 0:
-        amount = total_hours * rate
-        amount_rows = (
+    if expenses > 0:
+        amount_rows += (
+            '            <tr class="total-row">\n'
+            '                <td colspan="3">Expenses</td>\n'
+            f'                <td class="duration">${expenses:,.2f}</td>\n'
+            "            </tr>\n"
+        )
+    if (rate and rate > 0) or expenses > 0:
+        amount = total_hours * rate + expenses
+        breakdown = []
+        if rate and rate > 0:
+            breakdown.append(f"{total_hours:.2f}h \u00d7 ${rate:,.2f}/h")
+        if expenses > 0:
+            breakdown.append(f"${expenses:,.2f} expenses")
+        amount_rows += (
             '            <tr class="total-row">\n'
             f'                <td colspan="3">Amount Due ({brand.currency}) '
-            f'\u2014 {total_hours:.2f}h \u00d7 ${rate:,.2f}/h</td>\n'
+            f'\u2014 {" + ".join(breakdown)}</td>\n'
             f'                <td class="duration">${amount:,.2f} {brand.currency}</td>\n'
             "            </tr>\n"
         )

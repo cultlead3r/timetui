@@ -38,6 +38,16 @@ Never add a test that shells out to real `timew`.
   non-interactive `export` (no piped stdin); creating the dir first makes timew initialize it
   silently. No-op when `TIMEW_DB is None`. Test it only against `tmp_path` (never invoke timew).
 
+## Expenses (tag-encoded, no separate store)
+- A fixed expense (flight, hotel) is a synthetic **1-minute interval at 00:00 local**
+  (timew rejects zero-length ranges) created by `E`/`action_add_expense`, tagged
+  `expense` + `cost:<amount>` + `new`. The `cost:` tag is the authority: the pure
+  `models.expense_amount(tags)` decides expense-ness, and `models.split_billing()`
+  is the single seam for money — billable time **excludes** expense intervals, and
+  amounts everywhere are `time × rate + Σ costs` (report renderers, `_record_invoice`
+  snapshot, status Σ / sidebar). `derive_client` ignores `expense`/`cost:` tags.
+  Keep new expense logic in these pure seams (tests in `tests/test_timew.py`).
+
 ## Report layer (`report.py`)
 - Same pure/impure split as `timew.py`: `render_report_html()` is **pure** (builds the
   invoice HTML from `Interval`s, local time, oldest-first, html-escaped) and is unit-tested

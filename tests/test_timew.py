@@ -12,10 +12,13 @@ import pytest
 from timetui import timew
 from timetui.models import (
     Interval,
+    expense_amount,
+    format_cost_tag,
     format_duration,
     format_hours_decimal,
     format_timew_utc,
     parse_timew_utc,
+    split_billing,
 )
 
 SAMPLE = [
@@ -94,6 +97,54 @@ def test_searchable_text_contains_tags_and_annotation():
 
 def test_searchable_text_marks_active():
     assert "active" in Interval.from_export(SAMPLE[1]).searchable_text()
+
+
+# --------------------------------------------------------------------------- #
+# Expenses (pure helpers: cost: tag parsing + billing split)
+# --------------------------------------------------------------------------- #
+def test_expense_amount_parses_cost_tags():
+    assert expense_amount(["LA", "expense", "cost:450"]) == 450.0
+    assert expense_amount(["cost:450.00"]) == 450.0
+    # Hand-typed tags may carry a $ and thousands separators.
+    assert expense_amount(["cost:$1,250.50"]) == 1250.5
+
+
+def test_expense_amount_none_without_valid_cost():
+    assert expense_amount(["LA", "expense"]) is None  # marker alone isn't a cost
+    assert expense_amount([]) is None
+    # Malformed / non-positive amounts degrade to "not an expense", never raise.
+    assert expense_amount(["cost:abc"]) is None
+    assert expense_amount(["cost:0"]) is None
+    assert expense_amount(["cost:-5"]) is None
+    # The first parseable cost: tag wins over a malformed one.
+    assert expense_amount(["cost:abc", "cost:12.34"]) == 12.34
+
+
+def test_format_cost_tag_roundtrips_canonically():
+    assert format_cost_tag(450) == "cost:450.00"
+    # No $ / thousands separators: the tag never needs shell quoting.
+    assert format_cost_tag(1250.5) == "cost:1250.50"
+    assert expense_amount([format_cost_tag(99.9)]) == pytest.approx(99.9)
+
+
+def test_split_billing_separates_time_from_expenses():
+    work = Interval.from_export(SAMPLE[0])  # 1h30m completed
+    flight = Interval.from_export(
+        {"id": 3, "start": "20260310T080000Z", "end": "20260310T080100Z",
+         "tags": ["LA", "expense", "cost:450.00", "new"], "annotation": "Flight"}
+    )
+    time_total, expenses = split_billing([work, flight])
+    # The expense's synthetic minute never bills as time; its cost is fixed.
+    assert time_total == timedelta(hours=1, minutes=30)
+    assert expenses == 450.0
+
+
+def test_split_billing_active_interval_measured_to_now():
+    active = Interval.from_export(SAMPLE[1])
+    now = datetime(2026, 3, 10, 19, 0, 0, tzinfo=timezone.utc)
+    time_total, expenses = split_billing([active], now)
+    assert time_total == timedelta(hours=1)
+    assert expenses == 0.0
 
 
 # --------------------------------------------------------------------------- #

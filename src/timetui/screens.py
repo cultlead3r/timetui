@@ -250,6 +250,87 @@ class NewIntervalScreen(ModalScreen[dict | None]):
         )
 
 
+class ExpenseScreen(ModalScreen[dict | None]):
+    """Add a fixed expense (a flight, a hotel night, ...).
+
+    Expenses are date-granular — the app stores one as a synthetic 1-minute
+    interval at 00:00 of the chosen day, tagged ``expense`` + ``cost:<amount>``
+    (see ``models``). Returns ``{"day": datetime, "amount": float, "tags":
+    list[str], "description": str}`` (``day`` is local midnight, naive) or
+    ``None`` if cancelled.
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, *, default_tags: str = "") -> None:
+        super().__init__()
+        self._default_tags = default_tags
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("New expense", classes="dialog-title")
+            yield Label("Date")
+            yield Input(value=datetime.now().strftime("%Y-%m-%d"), id="date-input")
+            yield Label("Amount")
+            yield Input(placeholder="e.g. 450.00", id="amount-input")
+            yield Label("Tags  (space-separated, e.g. the client)")
+            yield Input(value=self._default_tags, id="tags-input")
+            yield Label("Description  (optional)")
+            yield Input(placeholder="e.g. Flight SFO-NRT", id="desc-input")
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Add", variant="success", id="save")
+                yield Button("Cancel", variant="primary", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#amount-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_save()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.action_save()
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        err = self.query_one("#error", Static)
+        try:
+            day = datetime.strptime(
+                self.query_one("#date-input", Input).value.strip(), "%Y-%m-%d"
+            )
+        except ValueError:
+            err.update("Bad date (use YYYY-MM-DD)")
+            return
+        raw = (
+            self.query_one("#amount-input", Input)
+            .value.strip()
+            .lstrip("$")
+            .replace(",", "")
+        )
+        try:
+            amount = float(raw)
+        except ValueError:
+            err.update("Amount must be a number")
+            return
+        if amount <= 0:
+            err.update("Amount must be greater than zero")
+            return
+        self.dismiss(
+            {
+                "day": day,
+                "amount": amount,
+                "tags": self.query_one("#tags-input", Input).value.split(),
+                "description": self.query_one("#desc-input", Input).value.strip(),
+            }
+        )
+
+
 class TagRemoveScreen(ModalScreen["list[str] | None"]):
     """Pick which of an interval's existing tags to remove.
 
@@ -385,7 +466,9 @@ class ReportScreen(ModalScreen["dict | None"]):
     ledger (see ``invoices.py``), or ``None`` when the "Record invoice" box is
     unchecked. ``default_invoice_id`` pre-fills the (always editable) ID field
     with the app's suggestion; ``taken_ids`` are existing ledger IDs, rejected
-    on save so an invoice number is never reused.
+    on save so an invoice number is never reused. ``has_expenses`` marks a
+    target set containing fixed ``cost:`` expenses — an expense-only invoice is
+    legitimate at rate 0, so it relaxes the "recording requires a rate" check.
     """
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -398,6 +481,7 @@ class ReportScreen(ModalScreen["dict | None"]):
         default_rate: float = 0.0,
         default_invoice_id: str = "",
         taken_ids: "frozenset[str] | set[str]" = frozenset(),
+        has_expenses: bool = False,
     ) -> None:
         super().__init__()
         self._count = count
@@ -405,6 +489,7 @@ class ReportScreen(ModalScreen["dict | None"]):
         self._default_rate = default_rate
         self._default_invoice_id = default_invoice_id
         self._taken_ids = set(taken_ids)
+        self._has_expenses = has_expenses
 
     def compose(self) -> ComposeResult:
         label = "entry" if self._count == 1 else "entries"
@@ -508,7 +593,7 @@ class ReportScreen(ModalScreen["dict | None"]):
             if invoice_id in self._taken_ids:
                 err.update(f"Invoice {invoice_id} already exists in the ledger")
                 return
-            if rate <= 0:
+            if rate <= 0 and not self._has_expenses:
                 err.update("Recording an invoice requires an hourly rate")
                 return
         self.dismiss(
@@ -936,6 +1021,9 @@ class HelpScreen(ModalScreen[None]):
   Σ in status bar = total of the filtered set (Hh Mm + decimal)
   sidebar shows totals grouped by tag-set
   set an hourly rate in config -> live $ amounts per tag-set and at the Σ
+  E    add a fixed expense (flight, hotel, ...): stored as a tiny interval
+       tagged expense + cost:AMOUNT — billed as $, never as time, and
+       itemized on reports (Amount Due = hours x rate + expenses)
 
 [b]Invoices[/b]  (tags mirror the lifecycle: new -> invoiced -> paid)
   R    "Record invoice" in the report dialog snapshots the amount into the
@@ -947,9 +1035,10 @@ class HelpScreen(ModalScreen[None]):
 [b]Edit[/b] (Time Warrior)
   a    annotate            t / T   add / remove tag
   m    modify start/end    o       new interval (track)
-  dd   delete (confirm)    s / S   start / stop tracking
-  c    continue (resume)   u       undo last change
-  r    reload              R       generate report (selection / view)
+  E    add expense         dd      delete (confirm)
+  s / S start / stop       c       continue (resume)
+  u    undo last change    r       reload
+  R    generate report (selection / view)
 
   q    quit                ?       this help"""
 

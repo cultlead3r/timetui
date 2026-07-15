@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -23,6 +23,7 @@ from timetui.invoices import Invoice, Payment
 from timetui.models import Interval
 from timetui.screens import (
     ColumnsScreen,
+    ExpenseScreen,
     InvoicesScreen,
     PaymentScreen,
     ReportScreen,
@@ -322,6 +323,197 @@ def test_no_rate_means_no_dollar_amounts(fixed_intervals):
             assert app.brand.rate == 0.0
             assert "$" not in str(app.query_one("#status", Static).content)
             assert "$" not in str(app.query_one("#breakdown", Static).content)
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Expenses (E): synthetic cost:-tagged intervals, billed as amounts not time
+# --------------------------------------------------------------------------- #
+EXPENSE_RAW = {
+    "id": 9, "start": "20260310T080000Z", "end": "20260310T080100Z",
+    "tags": ["LA", "expense", "cost:450.00", "new"],
+    "annotation": "Flight SFO-NRT",
+}
+
+
+@pytest.fixture
+def expense_intervals(monkeypatch, rated_intervals):
+    """The rated fixtures plus one fixed $450 expense."""
+    fixtures = [Interval.from_export(r) for r in [*RAW, EXPENSE_RAW]]
+    monkeypatch.setattr(timew, "load_intervals", lambda: list(fixtures))
+    return fixtures
+
+
+def test_snapshot_expense(snap_compare, expense_intervals):
+    # The expense rides the normal table; the status Σ and sidebar amounts
+    # include its fixed cost (time totals don't count its synthetic minute).
+    assert snap_compare(SnapApp(), terminal_size=(120, 30))
+
+
+def test_expense_bills_as_amount_not_time(expense_intervals):
+    """The $450 cost joins the money totals; the synthetic minute never does."""
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            await pilot.pause()
+            status = str(app.query_one("#status", Static).content)
+            # 6.5h of work (the expense minute is excluded from Σ time) at
+            # $200/h, plus the $450 expense.
+            assert "6.50h" in status
+            assert "$1,750.00" in status
+            breakdown = str(app.query_one("#breakdown", Static).content)
+            # The per-item cost: tag is dropped from the tag-set group key, and
+            # the expense group prices as its fixed amount.
+            assert "LA + expense + new" in breakdown
+            assert "cost:" not in breakdown
+            assert "$450.00" in breakdown
+
+    asyncio.run(scenario())
+
+
+def test_add_expense_issues_track_and_annotate(fixed_intervals, monkeypatch):
+    """E -> save creates a 1-minute midnight interval tagged expense +
+    cost:AMOUNT + new, then annotates it with the description."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    # After the `track`, the app re-loads and finds the new interval by its
+    # start (local midnight of the chosen day) to annotate it.
+    day = datetime(2026, 3, 10)
+    created = Interval(
+        id=9,
+        start=day.astimezone(),
+        end=(day + timedelta(minutes=1)).astimezone(),
+        tags=["LA", "expense", "cost:450.00", "new"],
+        annotation="",
+    )
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [created, *fixed_intervals]
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("E")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ExpenseScreen):
+                    break
+            assert isinstance(app.screen, ExpenseScreen)
+            # Tags pre-fill with the cursor row's client tag (newest row: LA).
+            assert app.screen.query_one("#tags-input", Input).value == "LA"
+            app.screen.query_one("#date-input", Input).value = "2026-03-10"
+            app.screen.query_one("#amount-input", Input).value = "$450"
+            app.screen.query_one("#desc-input", Input).value = "Flight SFO-NRT"
+            app.screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            assert calls[0] == [
+                "track", "2026-03-10T00:00:00", "-", "2026-03-10T00:01:00",
+                "LA", "expense", "cost:450.00", "new",
+            ]
+            assert calls[1] == ["annotate", "@9", "Flight SFO-NRT"]
+
+    asyncio.run(scenario())
+
+
+def test_invoice_snapshot_includes_expenses(tmp_path, monkeypatch):
+    """Recording an invoice over work + an expense books hours-only time and
+    amount = hours x rate + expenses; the expense is retagged like the work."""
+    raw = [
+        {"id": 2, "start": "20260308T090000Z", "end": "20260308T100000Z",
+         "tags": ["LA", "new"], "annotation": "work"},
+        {"id": 1, "start": "20260310T000000Z", "end": "20260310T000100Z",
+         "tags": ["LA", "expense", "cost:450.00", "new"], "annotation": "Flight"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    monkeypatch.setattr(app_module, "_today", lambda: date(2026, 3, 13))
+    monkeypatch.setattr(
+        report,
+        "load_brand_config",
+        lambda *a, **k: report.BrandConfig(rate=200.0, currency="USD"),
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            screen = app.screen
+            # expense/cost: tags never confuse the client guess
+            assert screen.query_one("#invoice-input", Input).value == "LA-2026-001"
+            screen.query_one("#open-checkbox", Checkbox).value = False
+            screen.query_one("#invoice-checkbox", Checkbox).value = True
+            await pilot.pause()
+            screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            # targets oldest-first: @2 (work) then @1 (expense), both retagged
+            assert calls[0] == ["tag", "@2", "@1", "invoiced", "LA-2026-001"]
+            assert calls[1] == ["untag", "@2", "@1", "new"]
+            ledger = invoices.load_ledger(invoices.ledger_path())
+            assert ledger[0].hours == pytest.approx(1.0)  # expense minute excluded
+            assert ledger[0].amount == pytest.approx(650.0)  # 1h × $200 + $450
+
+    asyncio.run(scenario())
+
+
+def test_expense_only_invoice_records_without_rate(tmp_path, monkeypatch):
+    """An expense-only report can be recorded with no hourly rate: the "rate
+    required" check is relaxed and the snapshot books the fixed amount."""
+    raw = [
+        {"id": 1, "start": "20260310T000000Z", "end": "20260310T000100Z",
+         "tags": ["LA", "expense", "cost:450.00", "new"], "annotation": "Flight"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    monkeypatch.setattr(app_module, "_today", lambda: date(2026, 3, 13))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("R")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
+            screen = app.screen
+            assert screen.query_one("#rate-input", Input).value == ""  # no config
+            screen.query_one("#open-checkbox", Checkbox).value = False
+            screen.query_one("#invoice-checkbox", Checkbox).value = True
+            await pilot.pause()
+            screen.action_save()
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            assert calls[0] == ["tag", "@1", "invoiced", "LA-2026-001"]
+            ledger = invoices.load_ledger(invoices.ledger_path())
+            assert ledger[0].hours == pytest.approx(0.0)
+            assert ledger[0].rate == 0.0
+            assert ledger[0].amount == pytest.approx(450.0)
 
     asyncio.run(scenario())
 

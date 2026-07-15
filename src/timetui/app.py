@@ -23,16 +23,22 @@ from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from . import invoices, report, timew
 from .models import (
+    COST_PREFIX,
+    EXPENSE_TAG,
     Interval,
     billing_amount,
+    expense_amount,
     format_amount,
+    format_cost_tag,
     format_duration,
     format_hours_decimal,
+    split_billing,
 )
 from .screens import (
     ColumnsScreen,
     ConfirmScreen,
     DownloadScreen,
+    ExpenseScreen,
     HelpScreen,
     InvoicesScreen,
     NewIntervalScreen,
@@ -160,6 +166,7 @@ class TimewApp(App):
         Binding("T", "remove_tag", "Untag"),
         Binding("m", "modify_time", "Modify"),
         Binding("o", "new_interval", "New"),
+        Binding("E", "add_expense", "Expense"),
         Binding("s", "start_tracking", "Start"),
         Binding("S", "stop_tracking", "Stop"),
         Binding("c", "continue_interval", "Continue"),
@@ -521,37 +528,41 @@ class TimewApp(App):
         return cell
 
     # ------------------------------------------------------------- side panels
-    def _amount_markup(self, td: timedelta) -> str:
-        """Trailing ``  $X`` money markup for a duration, or '' when no rate is set.
+    def _amount_markup(self, intervals: list[Interval], now: datetime) -> str:
+        """Trailing ``  $X`` money markup for a set of intervals, or ''.
 
-        Returns the configured-rate dollar value of ``td`` (decimal hours × rate)
-        in the success color, with a leading separator so it can be appended right
-        after a Σ total. Empty string when ``brand.rate`` is unset (rate ≤ 0).
+        The amount is ``billable time × rate + fixed expenses`` (see
+        ``models.split_billing`` — an expense's synthetic minute never bills as
+        time), in the success color with a leading separator so it can be
+        appended right after a Σ total. Empty when there is nothing to price:
+        no configured rate and no expenses in the set.
         """
-        if self.brand.rate <= 0:
+        time_total, expenses = split_billing(intervals, now)
+        if self.brand.rate <= 0 and expenses <= 0:
             return ""
-        amount = format_amount(billing_amount(td, self.brand.rate))
+        amount = format_amount(billing_amount(time_total, self.brand.rate) + expenses)
         return f"  [{self._pal['success']}][b]{amount}[/b][/]"
 
     def _update_status(self, now: datetime) -> None:
-        total = sum((iv.duration(now) for iv in self.displayed), timedelta())
+        total, _ = split_billing(self.displayed, now)
         count = len(self.displayed)
         active = sum(1 for iv in self.displayed if iv.is_active)
         parts = [
             f"[b]{count}[/b] {'entry' if count == 1 else 'entries'}",
             f"[{self._pal['secondary']}]\u03a3 [b]{format_duration(total)}[/b] "
-            f"([b]{format_hours_decimal(total)}[/b])[/]" + self._amount_markup(total),
+            f"([b]{format_hours_decimal(total)}[/b])[/]"
+            + self._amount_markup(self.displayed, now),
         ]
         if active:
             parts.append(f"[{self._pal['success']}]\u25cf {active} active[/]")
         if self.selected:
             sel = [iv for iv in self.all_intervals if iv.start in self.selected]
-            sel_total = sum((iv.duration(now) for iv in sel), timedelta())
+            sel_total, _ = split_billing(sel, now)
             parts.append(
                 f"[{self._pal['accent']}][b]{len(self.selected)}[/b] selected "
                 f"\u03a3 [b]{format_duration(sel_total)}[/b] "
                 f"([b]{format_hours_decimal(sel_total)}[/b])[/]"
-                + self._amount_markup(sel_total)
+                + self._amount_markup(sel, now)
             )
         if self.query:
             parts.append(f"[{self._pal['accent']}]filter[/] [i]{self.query}[/i]")
@@ -569,23 +580,34 @@ class TimewApp(App):
             source = self.displayed
             box.border_title = "Totals by tag-set"
 
-        totals: dict[str, timedelta] = {}
+        # Group by tag-set, minus the per-expense `cost:` tags — so a client's
+        # expenses collapse into one `LA + expense + ...` group instead of one
+        # group per distinct amount.
+        groups: dict[str, list[Interval]] = {}
         for iv in source:
-            key = " + ".join(sorted(iv.tags)) if iv.tags else "(untagged)"
-            totals[key] = totals.get(key, timedelta()) + iv.duration(now)
+            shown = sorted(t for t in iv.tags if not t.startswith(COST_PREFIX))
+            key = " + ".join(shown) if shown else "(untagged)"
+            groups.setdefault(key, []).append(iv)
 
         lines: list[str] = []
-        if not totals:
+        if not groups:
             lines.append("[dim]no entries in view[/dim]")
         else:
-            for key, dur in sorted(totals.items(), key=lambda kv: kv[1], reverse=True):
+            # Billable time first (an expense's synthetic minute never bills);
+            # each group prices as time × rate + its fixed expenses.
+            split = {key: split_billing(ivs, now) for key, ivs in groups.items()}
+            for key, (dur, expenses) in sorted(
+                split.items(), key=lambda kv: kv[1], reverse=True
+            ):
                 lines.append(f"[{self._pal['primary']}]{key}[/]")
                 line = (
                     f"  [b]{format_duration(dur)}[/b]"
                     f"  [dim]{format_hours_decimal(dur)}[/dim]"
                 )
-                if self.brand.rate > 0:
-                    amount = format_amount(billing_amount(dur, self.brand.rate))
+                if self.brand.rate > 0 or expenses > 0:
+                    amount = format_amount(
+                        billing_amount(dur, self.brand.rate) + expenses
+                    )
                     line += f"  [{self._pal['success']}]{amount}[/]"
                 lines.append(line)
         self.query_one("#breakdown", Static).update("\n".join(lines))
@@ -965,6 +987,61 @@ class TimewApp(App):
         self.reload(preserve_start=start_utc)
 
     @work
+    async def action_add_expense(self) -> None:
+        """Record a fixed expense (flight, hotel, ...) as a synthetic interval.
+
+        Expenses live inside the Time Warrior data as 1-minute intervals (timew
+        rejects zero-length ranges) at 00:00 local of the chosen day — midnight
+        so they virtually never collide with real tracking — tagged ``expense``
+        + ``cost:<amount>`` + ``new``, with the description as the annotation.
+        They then ride the whole billing lifecycle like any interval: filtering,
+        selection, invoicing (``R``) and the ``new -> invoiced -> paid`` tag
+        sync. The ``cost:`` tag bills as a fixed amount, never as time (see
+        ``models.split_billing``).
+        """
+        # Prefill the tags field with the cursor row's client tag(s): its tags
+        # minus workflow/expense bookkeeping and existing invoice-ID tags.
+        iv = self.current_interval()
+        taken = {inv.id for inv in invoices.load_ledger(invoices.ledger_path())}
+        client = " ".join(
+            t for t in (iv.tags if iv else [])
+            if t.lower() not in invoices.WORKFLOW_TAGS
+            and t.lower() != EXPENSE_TAG
+            and not t.startswith(COST_PREFIX)
+            and t not in taken
+        )
+        result = await self.push_screen_wait(ExpenseScreen(default_tags=client))
+        if not result:
+            return
+        start = result["day"]  # local midnight, naive (timew reads it as local)
+        tags = [
+            *result["tags"],
+            EXPENSE_TAG,
+            format_cost_tag(result["amount"]),
+            "new",
+        ]
+        start_utc = start.astimezone()
+        try:
+            timew.execute(timew.args_track(start, start + timedelta(minutes=1), tags))
+            if result["description"]:
+                self.all_intervals = timew.load_intervals()
+                match = next(
+                    (iv for iv in self.all_intervals if iv.start == start_utc), None
+                )
+                if match is not None:
+                    timew.execute(timew.args_annotate(match.id, result["description"]))
+        except timew.TimewError as exc:
+            self.notify(exc.message or str(exc), title="timew error",
+                        severity="error", timeout=8)
+            self.reload()
+            return
+        self.notify(
+            f"Added expense ({format_amount(result['amount'])})",
+            severity="information", timeout=3,
+        )
+        self.reload(preserve_start=start_utc)
+
+    @work
     async def action_undo(self) -> None:
         confirmed = await self.push_screen_wait(
             ConfirmScreen("Undo the last Time Warrior change?", confirm_label="Undo")
@@ -1003,6 +1080,9 @@ class TimewApp(App):
                 default_rate=self.brand.rate,
                 default_invoice_id=invoices.next_invoice_id(ledger, client, _today()),
                 taken_ids=taken,
+                has_expenses=any(
+                    expense_amount(iv.tags) is not None for iv in targets
+                ),
             )
         )
         if not result:
@@ -1050,7 +1130,9 @@ class TimewApp(App):
         """Snapshot an exported report into the ledger and retag its intervals.
 
         The recorded amount is exactly what the report shows (open intervals
-        billed up to now). The retag is two timew calls — one atomic ``tag``
+        billed up to now): billable time × rate plus the targets' fixed
+        ``cost:`` expenses; ``hours`` is time-only (see ``models.split_billing``).
+        The retag is two timew calls — one atomic ``tag``
         adding ``invoiced`` + the invoice ID to every target, and one atomic
         ``untag`` dropping ``new`` from the targets that carry it (so ``u``
         undoes it in two steps). Both are tag-only operations, which never
@@ -1059,8 +1141,8 @@ class TimewApp(App):
         invoice that was not recorded.
         """
         now = datetime.now(timezone.utc)
-        total = sum((iv.duration(now) for iv in targets), timedelta())
-        amount = billing_amount(total, rate)
+        total, expenses = split_billing(targets, now)
+        amount = billing_amount(total, rate) + expenses
         ledger.append(
             invoices.Invoice(
                 id=invoice_id,

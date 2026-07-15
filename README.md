@@ -85,6 +85,7 @@ database?" prompt, which would otherwise hang the TUI).
 | `t` / `T` | add / remove tag(s) |
 | `m` | modify start/end times |
 | `o` | add a new interval (`timew track`) |
+| `E` | add a fixed expense (flight, hotel, … — billed as an amount, not time) |
 | `dd` | delete the selected interval (confirm) |
 | `s` / `S` | start / stop tracking |
 | `c` | continue (resume the highlighted interval now) |
@@ -200,6 +201,37 @@ sidebar gets its `$` total and a grand total appears next to the `Σ` summation 
 the status bar (the configured rate also pre-fills the report's "Amount Due"). The
 amounts follow the selection when one is active, just like the time totals. Leave
 `rate` unset (or `0`) for an hours-only view.
+
+## Expenses
+
+Not everything you bill is time — press `E` to record a fixed expense (a
+flight, a hotel night, a license). The dialog asks for the **date**, the
+**amount**, **tags** (pre-filled with the highlighted row's client tag) and an
+optional **description**.
+
+Expenses live *inside* the Time Warrior data, so they need no separate store
+and ride every existing mechanism (filtering, selection, invoicing, undo,
+backups). One expense is a synthetic **1-minute interval at 00:00** of its day
+(Time Warrior rejects zero-length ranges; midnight keeps it clear of real
+tracking), tagged:
+
+- `expense` — the human-facing marker, so typing `expense` in the filter shows
+  them all;
+- `cost:450.00` — the amount. This tag is the authority: anything carrying a
+  parseable `cost:` amount bills as a **fixed amount, never as time** (its
+  synthetic minute is excluded from all hour totals and `Σ`);
+- `new` — so it enters the normal `new → invoiced → paid` lifecycle.
+
+On reports an expense is itemized as its own row — description, date, and the
+amount in the Duration column — with an **Expenses** subtotal under the hours
+Total, and **Amount Due = hours × rate + expenses** (shown even with no hourly
+rate, so an expense-only invoice works). Recording the invoice snapshots that
+same amount into the ledger and retags the expense along with the work it
+accompanied; the live `$` amounts in the status bar and sidebar include
+expenses the same way.
+
+To change an amount later, edit the `cost:` tag (`T` to remove, `t` to re-add)
+or `dd` the expense and re-enter it.
 
 ## Invoices & payments
 
