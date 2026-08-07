@@ -23,6 +23,7 @@ from timetui.invoices import Invoice, Payment
 from timetui.models import Interval
 from timetui.screens import (
     ColumnsScreen,
+    ConfirmScreen,
     ExpenseScreen,
     InvoicesScreen,
     PaymentScreen,
@@ -828,6 +829,106 @@ def test_refund_swaps_paid_back_to_invoiced(monkeypatch):
                 ["untag", "@1", "paid"],
             ]
             assert invoices.load_ledger(path)[0].status == "partial"
+
+    asyncio.run(scenario())
+
+
+def test_undo_last_payment_reopens_and_persists(monkeypatch):
+    """I -> u removes the most recently *recorded* payment (the typo fix).
+
+    Undoing the settling payment reopens the invoice, so closing the screen
+    swaps the interval tags back (+ invoiced, - paid) just like a refund.
+    """
+    raw = [
+        {"id": 1, "start": "20260308T090000Z", "end": "20260308T100000Z",
+         "tags": ["LA", "paid", "LA-2026-001"], "annotation": "settled work"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    invoices.save_ledger(
+        path,
+        [Invoice(id="LA-2026-001", date="2026-03-12", hours=20.0, rate=200.0,
+                 amount=4000.0,
+                 payments=[Payment(date="2026-03-14", amount=1000.0),
+                           Payment(date="2026-03-15", amount=3000.0,
+                                   note="typo: should be 4000")])],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, InvoicesScreen):
+                    break
+            assert isinstance(app.screen, InvoicesScreen)
+            await pilot.press("u")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, ConfirmScreen):
+                    break
+            assert isinstance(app.screen, ConfirmScreen)
+            await pilot.press("y")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, InvoicesScreen):
+                    break
+            await pilot.press("q")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            # last *recorded* payment (3000) is gone; the earlier one survives
+            saved = invoices.load_ledger(path)
+            assert [p.amount for p in saved[0].payments] == [1000.0]
+            assert saved[0].status == "partial"
+            # reopening swaps the interval tags back, found by the ID tag
+            assert calls == [
+                ["tag", "@1", "invoiced"],
+                ["untag", "@1", "paid"],
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_undo_payment_without_payments_is_a_noop(fixed_intervals, monkeypatch):
+    """`u` on an invoice with no payments warns and changes nothing."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    ledger = [Invoice(id="LA-2026-001", date="2026-01-15", hours=5.0,
+                      rate=200.0, amount=1000.0)]
+    invoices.save_ledger(path, ledger)
+    before = invoices.dumps(ledger)
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, InvoicesScreen):
+                    break
+            assert isinstance(app.screen, InvoicesScreen)
+            await pilot.press("u")
+            await pilot.pause()
+            # no confirm dialog — just a warning notification
+            assert isinstance(app.screen, InvoicesScreen)
+            await pilot.press("q")
+            await pilot.pause()
+            assert invoices.dumps(invoices.load_ledger(path)) == before
+            assert calls == []
 
     asyncio.run(scenario())
 

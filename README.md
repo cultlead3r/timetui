@@ -91,7 +91,7 @@ database?" prompt, which would otherwise hang the TUI).
 | `c` | continue (resume the highlighted interval now) |
 | `u` | undo the last Time Warrior change |
 | `R` | generate an HTML/PDF report of the selection (or the filtered view), optionally recording it as an invoice |
-| `I` | invoice ledger: amounts, payments, balances (`p` = record payment, `x` = delete) |
+| `I` | invoice ledger: amounts, payments, balances (`p` = record payment, `u` = undo last payment, `x` = delete) |
 | `w` | wrap annotations (multi-line rows) |
 | `f` | toggle the sidebar (full-width table) |
 | `C` | show / hide table columns (ID hidden by default) |
@@ -251,8 +251,10 @@ table always shows which work is unbilled, awaiting money, or settled:
    total outstanding, and the highlighted invoice's payment history.
 3. When money arrives, press `p` on the invoice and enter the amount (pre-filled
    with the full balance), date, and an optional note (e.g. `wire ref 123`).
-   Partial payments accumulate until the balance clears; `x` deletes a
-   mis-recorded invoice (after confirming — interval tags are left alone).
+   Partial payments accumulate until the balance clears; `u` undoes the
+   invoice's most recently recorded payment (after confirming — for fixing a
+   mistyped amount); `x` deletes a mis-recorded invoice (after confirming —
+   interval tags are left alone).
 4. The payment that **settles the balance** retags the invoice's intervals
    automatically: `paid` replaces `invoiced` (the invoice-ID tag stays, keeping
    the ledger link). A refund (negative payment) that reopens the balance swaps

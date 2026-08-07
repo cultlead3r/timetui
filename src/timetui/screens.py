@@ -814,15 +814,18 @@ class InvoicesScreen(ModalScreen[bool]):
     """Browse the invoice ledger: amount / paid / balance / status per invoice,
     with the highlighted invoice's payment history below the table.
 
-    ``p`` records a payment (opens :class:`PaymentScreen`), ``x`` deletes an
-    invoice (confirmed). The list passed in is mutated in place; the screen
-    dismisses ``True`` when it changed, so the app knows to save the ledger.
+    ``p`` records a payment (opens :class:`PaymentScreen`), ``u`` undoes the
+    highlighted invoice's most recently *recorded* payment (confirmed — the
+    typo fix), ``x`` deletes an invoice (confirmed). The list passed in is
+    mutated in place; the screen dismisses ``True`` when it changed, so the app
+    knows to save the ledger.
     """
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("q", "close", "Close"),
         Binding("p", "payment", "Record payment"),
+        Binding("u", "undo_payment", "Undo last payment"),
         Binding("x", "delete", "Delete invoice"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
@@ -846,7 +849,8 @@ class InvoicesScreen(ModalScreen[bool]):
             yield Static(id="invoice-summary")
             yield Static(id="invoice-detail")
             yield Static(
-                "p  record payment     x  delete invoice     esc / q  close",
+                "p  record payment     u  undo last payment     "
+                "x  delete invoice     esc / q  close",
                 classes="hint",
             )
 
@@ -967,6 +971,38 @@ class InvoicesScreen(ModalScreen[bool]):
         self._refresh(keep_id=inv.id)
 
     @work
+    async def action_undo_payment(self) -> None:
+        """Remove the highlighted invoice's most recently recorded payment.
+
+        "Last" is entry order (``payments[-1]``), not payment date — the point
+        is undoing a just-mistyped amount. Crossing the paid boundary backwards
+        is handled by the normal close flow (``paid_transitions`` reopens the
+        invoice and swaps its interval tags ``paid -> invoiced``).
+        """
+        inv = self._current()
+        if inv is None:
+            return
+        if not inv.payments:
+            self.app.notify(
+                f"{inv.id} has no payments to undo", severity="warning", timeout=3
+            )
+            return
+        last = inv.payments[-1]
+        note = f"  ({escape(last.note)})" if last.note else ""
+        confirmed = await self.app.push_screen_wait(
+            ConfirmScreen(
+                f"Undo the last payment on {inv.id}?\n"
+                f"{last.date}  {format_amount(last.amount)}{note}",
+                confirm_label="Undo",
+            )
+        )
+        if not confirmed:
+            return
+        inv.payments.pop()
+        self._changed = True
+        self._refresh(keep_id=inv.id)
+
+    @work
     async def action_delete(self) -> None:
         inv = self._current()
         if inv is None:
@@ -1029,6 +1065,7 @@ class HelpScreen(ModalScreen[None]):
   R    "Record invoice" in the report dialog snapshots the amount into the
        ledger and retags the intervals (new -> invoiced + the invoice ID)
   I    invoice ledger: amount / paid / balance   p  payment   x  delete
+       u  undo the invoice's most recent payment (typo fix)
        the payment that settles a balance retags its intervals
        invoiced -> paid (a reopening refund swaps back)
 
