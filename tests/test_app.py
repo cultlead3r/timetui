@@ -29,6 +29,7 @@ from timetui.screens import (
     PaymentScreen,
     ReportScreen,
     TextReportScreen,
+    TransferScreen,
     VimRadioSet,
 )
 
@@ -967,5 +968,155 @@ def test_report_dialog_prefills_rate_from_config(rated_intervals):
             await pilot.pause()
             assert isinstance(app.screen, ReportScreen)
             assert app.screen.query_one("#rate-input", Input).value == "200"
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Overpayment credit: t transfers it to an open invoice (linked payment pair)
+# --------------------------------------------------------------------------- #
+async def _wait_for_screen(pilot, app, screen_type) -> None:
+    for _ in range(40):
+        await pilot.pause(0.05)
+        if isinstance(app.screen, screen_type):
+            return
+    raise AssertionError(f"{screen_type.__name__} never opened")
+
+
+def _credit_setup(monkeypatch, interval_tags, ledger):
+    """One interval covered by LA-2026-001, a captured timew.execute, a ledger."""
+    raw = [
+        {"id": 1, "start": "20260301T090000Z", "end": "20260301T100000Z",
+         "tags": interval_tags, "annotation": "older work"},
+    ]
+    monkeypatch.setattr(
+        timew, "load_intervals", lambda: [Interval.from_export(r) for r in raw]
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    invoices.save_ledger(path, ledger)
+    return path, calls
+
+
+def test_transfer_credit_settles_target_and_retags(monkeypatch):
+    """I -> t -> Enter moves the newest (overpaid) invoice's $200 credit onto
+    the open one; settling it retags its intervals invoiced -> paid."""
+    path, calls = _credit_setup(
+        monkeypatch,
+        ["LA", "invoiced", "LA-2026-001"],
+        [Invoice(id="LA-2026-001", date="2026-03-01", hours=2.5, rate=200.0,
+                 amount=500.0,
+                 payments=[Payment(date="2026-03-05", amount=300.0)]),
+         Invoice(id="LA-2026-002", date="2026-03-10", hours=5.0, rate=200.0,
+                 amount=1000.0,
+                 payments=[Payment(date="2026-03-12", amount=1200.0)])],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("t")  # cursor starts on the newest: LA-2026-002
+            await _wait_for_screen(pilot, app, TransferScreen)
+            # pre-filled with what the target can absorb: min(credit, balance)
+            assert app.screen.query_one("#amount-input", Input).value == "200.00"
+            await pilot.press("enter")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("q")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            saved = {inv.id: inv for inv in invoices.load_ledger(path)}
+            source, target = saved["LA-2026-002"], saved["LA-2026-001"]
+            assert (source.payments[-1].amount, source.payments[-1].transfer) == (
+                -200.0, "LA-2026-001")
+            assert (target.payments[-1].amount, target.payments[-1].transfer) == (
+                200.0, "LA-2026-002")
+            assert source.credit == 0.0 and source.status == "paid"
+            assert target.status == "paid"
+            assert calls == [
+                ["tag", "@1", "paid"],
+                ["untag", "@1", "invoiced"],
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_transfer_without_credit_is_a_noop(fixed_intervals, monkeypatch, ledger_fixture):
+    """`t` on an invoice that isn't overpaid warns and changes nothing."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+    path = invoices.ledger_path()
+    before = invoices.dumps(invoices.load_ledger(path))
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("t")
+            await pilot.pause()
+            assert isinstance(app.screen, InvoicesScreen)  # no dialog, just a warning
+            await pilot.press("q")
+            await pilot.pause()
+            assert invoices.dumps(invoices.load_ledger(path)) == before
+            assert calls == []
+
+    asyncio.run(scenario())
+
+
+def test_undo_transfer_removes_both_legs_and_reopens_target(monkeypatch):
+    """`u` on a transfer leg removes its twin too; the target reopens, so its
+    intervals swap back paid -> invoiced."""
+    path, calls = _credit_setup(
+        monkeypatch,
+        ["LA", "paid", "LA-2026-001"],
+        [Invoice(id="LA-2026-001", date="2026-03-01", hours=2.5, rate=200.0,
+                 amount=500.0,
+                 payments=[Payment(date="2026-03-05", amount=300.0),
+                           Payment(date="2026-03-15", amount=200.0,
+                                   note="credit from LA-2026-002",
+                                   transfer="LA-2026-002")]),
+         Invoice(id="LA-2026-002", date="2026-03-10", hours=5.0, rate=200.0,
+                 amount=1000.0,
+                 payments=[Payment(date="2026-03-12", amount=1200.0),
+                           Payment(date="2026-03-15", amount=-200.0,
+                                   note="credit to LA-2026-001",
+                                   transfer="LA-2026-001")])],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("u")  # cursor on LA-2026-002, last payment = the leg
+            await _wait_for_screen(pilot, app, ConfirmScreen)
+            await pilot.press("y")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("q")
+            for _ in range(40):
+                await pilot.pause(0.05)
+                if len(calls) >= 2:
+                    break
+            saved = {inv.id: inv for inv in invoices.load_ledger(path)}
+            assert [p.amount for p in saved["LA-2026-002"].payments] == [1200.0]
+            assert [p.amount for p in saved["LA-2026-001"].payments] == [300.0]
+            assert saved["LA-2026-002"].credit == 200.0
+            assert saved["LA-2026-001"].status == "partial"
+            assert calls == [
+                ["tag", "@1", "invoiced"],
+                ["untag", "@1", "paid"],
+            ]
 
     asyncio.run(scenario())

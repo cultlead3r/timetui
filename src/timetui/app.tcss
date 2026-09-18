@@ -172,7 +172,8 @@ ModalScreen {
     color: $text-muted;
 }
 
-#tag-list {
+#tag-list,
+#target-list {
     height: auto;
     max-height: 12;
     margin-bottom: 1;

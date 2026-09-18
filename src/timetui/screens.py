@@ -17,6 +17,7 @@ from textual.widgets import (
     DataTable,
     Input,
     Label,
+    OptionList,
     ProgressBar,
     RadioButton,
     RadioSet,
@@ -24,6 +25,7 @@ from textual.widgets import (
     Static,
 )
 
+from . import invoices as ledger
 from .invoices import Invoice, Payment
 from .models import Interval, format_amount
 
@@ -810,13 +812,118 @@ class PaymentScreen(ModalScreen["dict | None"]):
         )
 
 
+class TransferScreen(ModalScreen["dict | None"]):
+    """Move an overpaid invoice's credit onto another (open) invoice.
+
+    Returns ``{"target", "amount"}`` (target invoice ID, amount ``float``) or
+    None if cancelled. The amount pre-fills with as much of the credit as the
+    highlighted target can absorb, so the common case is pick + Enter.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    def __init__(self, source: "Invoice", targets: "list[Invoice]") -> None:
+        super().__init__()
+        self._source = source
+        self._targets = targets
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static(
+                f"Transfer credit — {self._source.id}", classes="dialog-title"
+            )
+            yield Label(f"Apply to  (credit {format_amount(self._source.credit)})")
+            yield OptionList(
+                *(
+                    f"{inv.id}  balance {format_amount(inv.balance)}"
+                    for inv in self._targets
+                ),
+                id="target-list",
+            )
+            yield Label("Amount")
+            yield Input(placeholder="e.g. 200", id="amount-input")
+            yield Static("", id="error", classes="error")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Transfer", variant="success", id="save")
+                yield Button("Cancel", variant="primary", id="cancel")
+
+    def on_mount(self) -> None:
+        options = self.query_one("#target-list", OptionList)
+        options.highlighted = 0
+        options.focus()
+        self._prefill(0)
+
+    def _prefill(self, index: int) -> None:
+        target = self._targets[index]
+        amount = min(self._source.credit, target.balance)
+        self.query_one("#amount-input", Input).value = f"{amount:.2f}"
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        self._prefill(event.option_index)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.action_save()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_save()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.action_save()
+        else:
+            self.dismiss(None)
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#target-list", OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#target-list", OptionList).action_cursor_up()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        err = self.query_one("#error", Static)
+        index = self.query_one("#target-list", OptionList).highlighted
+        if index is None:
+            err.update("Pick an invoice to apply the credit to")
+            return
+        raw = (
+            self.query_one("#amount-input", Input)
+            .value.strip()
+            .lstrip("$")
+            .replace(",", "")
+        )
+        try:
+            amount = float(raw)
+        except ValueError:
+            err.update("Transfer amount must be a number")
+            return
+        if amount <= 0 or amount > self._source.credit + ledger.PAID_EPSILON:
+            err.update(
+                "Transfer amount must be between 0 and the credit "
+                f"{format_amount(self._source.credit)}"
+            )
+            return
+        self.dismiss({"target": self._targets[index].id, "amount": amount})
+
+
 class InvoicesScreen(ModalScreen[bool]):
     """Browse the invoice ledger: amount / paid / balance / status per invoice,
     with the highlighted invoice's payment history below the table.
 
     ``p`` records a payment (opens :class:`PaymentScreen`), ``u`` undoes the
     highlighted invoice's most recently *recorded* payment (confirmed — the
-    typo fix), ``x`` deletes an invoice (confirmed). The list passed in is
+    typo fix), ``t`` transfers an overpaid invoice's credit to an open one
+    (opens :class:`TransferScreen`), ``x`` deletes an invoice (confirmed). The list passed in is
     mutated in place; the screen dismisses ``True`` when it changed, so the app
     knows to save the ledger.
     """
@@ -826,12 +933,14 @@ class InvoicesScreen(ModalScreen[bool]):
         Binding("q", "close", "Close"),
         Binding("p", "payment", "Record payment"),
         Binding("u", "undo_payment", "Undo last payment"),
+        Binding("t", "transfer", "Transfer credit"),
         Binding("x", "delete", "Delete invoice"),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
     ]
 
     STATUS_STYLE = {"paid": "green", "partial": "yellow", "unpaid": "red"}
+    CREDIT_STYLE = "cyan"  # overpaid: still "paid", but holding a surplus
     COLUMN_LABELS = ("Invoice", "Date", "Hours", "Amount", "Paid", "Balance", "Status")
 
     def __init__(self, invoices: "list[Invoice]") -> None:
@@ -850,6 +959,7 @@ class InvoicesScreen(ModalScreen[bool]):
             yield Static(id="invoice-detail")
             yield Static(
                 "p  record payment     u  undo last payment     "
+                "t  transfer credit\n"
                 "x  delete invoice     esc / q  close",
                 classes="hint",
             )
@@ -874,7 +984,7 @@ class InvoicesScreen(ModalScreen[bool]):
         )
         rows: list[tuple[Text, ...]] = []
         for inv in self._order:
-            style = self.STATUS_STYLE.get(inv.status, "")
+            style = self._style(inv)
             rows.append(
                 (
                     Text(inv.id, style="bold"),
@@ -883,7 +993,7 @@ class InvoicesScreen(ModalScreen[bool]):
                     Text(format_amount(inv.amount)),
                     Text(format_amount(inv.paid)),
                     Text(format_amount(inv.balance), style=style),
-                    Text(inv.status, style=style),
+                    Text(self._status_label(inv), style=style),
                 )
             )
         table.clear(columns=True)
@@ -905,6 +1015,15 @@ class InvoicesScreen(ModalScreen[bool]):
         self._update_summary()
         self._update_detail()
 
+    def _style(self, inv: "Invoice") -> str:
+        if inv.credit:
+            return self.CREDIT_STYLE
+        return self.STATUS_STYLE.get(inv.status, "")
+
+    @staticmethod
+    def _status_label(inv: "Invoice") -> str:
+        return "paid +credit" if inv.credit else inv.status
+
     def _current(self) -> "Invoice | None":
         row = self.query_one("#invoices-table", DataTable).cursor_row
         if 0 <= row < len(self._order):
@@ -915,11 +1034,16 @@ class InvoicesScreen(ModalScreen[bool]):
         invoiced = sum(inv.amount for inv in self._invoices)
         paid = sum(inv.paid for inv in self._invoices)
         outstanding = sum(inv.balance for inv in self._invoices if inv.status != "paid")
-        self.query_one("#invoice-summary", Static).update(
+        credit = sum(inv.credit for inv in self._invoices)
+        summary = (
             f"\u03a3 invoiced [b]{format_amount(invoiced)}[/b]"
             f"    paid [green]{format_amount(paid)}[/green]"
             f"    outstanding [red][b]{format_amount(outstanding)}[/b][/red]"
         )
+        if credit:
+            style = self.CREDIT_STYLE
+            summary += f"    credit [{style}][b]{format_amount(credit)}[/b][/{style}]"
+        self.query_one("#invoice-summary", Static).update(summary)
 
     def _update_detail(self) -> None:
         box = self.query_one("#invoice-detail", Static)
@@ -930,7 +1054,7 @@ class InvoicesScreen(ModalScreen[bool]):
                 "\u201cRecord invoice\u201d when exporting a report[/dim]"
             )
             return
-        style = self.STATUS_STYLE.get(inv.status, "")
+        style = self._style(inv)
         lines = [
             f"[b]{escape(inv.id)}[/b]  {inv.date}  \u2014  {inv.hours:.2f}h "
             f"\u00d7 ${inv.rate:g}/h = {format_amount(inv.amount)} {escape(inv.currency)}"
@@ -941,10 +1065,16 @@ class InvoicesScreen(ModalScreen[bool]):
                 lines.append(f"  {p.date}  {format_amount(p.amount)}{note}")
         else:
             lines.append("  [dim]no payments recorded[/dim]")
-        lines.append(
-            f"balance [b][{style}]{format_amount(inv.balance)}[/{style}][/b] "
-            f"([{style}]{inv.status}[/{style}])"
-        )
+        if inv.credit:
+            lines.append(
+                f"credit [b][{style}]{format_amount(inv.credit)}[/{style}][/b] "
+                f"([{style}]overpaid \u2014 t transfers it to another invoice[/{style}])"
+            )
+        else:
+            lines.append(
+                f"balance [b][{style}]{format_amount(inv.balance)}[/{style}][/b] "
+                f"([{style}]{inv.status}[/{style}])"
+            )
         box.update("\n".join(lines))
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -989,16 +1119,52 @@ class InvoicesScreen(ModalScreen[bool]):
             return
         last = inv.payments[-1]
         note = f"  ({escape(last.note)})" if last.note else ""
+        linked = (
+            f"\nand its matching entry on {last.transfer}" if last.transfer else ""
+        )
         confirmed = await self.app.push_screen_wait(
             ConfirmScreen(
                 f"Undo the last payment on {inv.id}?\n"
-                f"{last.date}  {format_amount(last.amount)}{note}",
+                f"{last.date}  {format_amount(last.amount)}{note}{linked}",
                 confirm_label="Undo",
             )
         )
         if not confirmed:
             return
-        inv.payments.pop()
+        ledger.undo_last_payment(self._invoices, inv)
+        self._changed = True
+        self._refresh(keep_id=inv.id)
+
+    @work
+    async def action_transfer(self) -> None:
+        """Move the highlighted (overpaid) invoice's credit to an open invoice.
+
+        Recorded as a linked payment pair (``invoices.transfer_credit``); a
+        transfer that settles the target crosses the paid boundary like any
+        payment, so the normal close flow retags its intervals.
+        """
+        inv = self._current()
+        if inv is None:
+            return
+        if not inv.credit:
+            self.app.notify(
+                f"{inv.id} has no credit to transfer", severity="warning", timeout=3
+            )
+            return
+        targets = ledger.transfer_targets(self._invoices, inv)
+        if not targets:
+            self.app.notify(
+                f"No open {inv.currency} invoice to apply the credit to",
+                severity="warning", timeout=3,
+            )
+            return
+        result = await self.app.push_screen_wait(TransferScreen(inv, targets))
+        if not result:
+            return
+        target = next(t for t in targets if t.id == result["target"])
+        ledger.transfer_credit(
+            inv, target, result["amount"], datetime.now().strftime("%Y-%m-%d")
+        )
         self._changed = True
         self._refresh(keep_id=inv.id)
 
@@ -1066,6 +1232,7 @@ class HelpScreen(ModalScreen[None]):
        ledger and retags the intervals (new -> invoiced + the invoice ID)
   I    invoice ledger: amount / paid / balance   p  payment   x  delete
        u  undo the invoice's most recent payment (typo fix)
+       t  transfer an overpaid invoice's credit to an open invoice
        the payment that settles a balance retags its intervals
        invoiced -> paid (a reopening refund swaps back)
 

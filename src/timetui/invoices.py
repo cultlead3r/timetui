@@ -25,6 +25,9 @@ Interval tags mirror the lifecycle ``new -> invoiced -> paid``: recording an
 invoice swaps ``new`` for ``invoiced``, and a payment that settles the balance
 swaps ``invoiced`` for ``paid`` (a refund that reopens the balance swaps back
 — see :func:`paid_transitions`, driven by ``app.action_invoices``).
+
+An overpayment leaves a derived :attr:`Invoice.credit` (no separate store);
+:func:`transfer_credit` applies it to another invoice as a linked payment pair.
 """
 
 from __future__ import annotations
@@ -55,6 +58,9 @@ class Payment:
     date: str  # local ISO date, e.g. "2026-07-10"
     amount: float
     note: str = ""
+    # Counterparty invoice ID when this is one leg of a credit transfer
+    # (see :func:`transfer_credit`); "" for an ordinary payment.
+    transfer: str = ""
 
 
 @dataclass
@@ -81,6 +87,15 @@ class Invoice:
     @property
     def balance(self) -> float:
         return self.amount - self.paid
+
+    @property
+    def credit(self) -> float:
+        """Overpaid surplus (beyond :data:`PAID_EPSILON`), else ``0.0``.
+
+        An overpaid invoice is still ``"paid"`` — :attr:`status` stays
+        three-valued so the paid-boundary logic never sees a fourth state.
+        """
+        return -self.balance if self.balance < -PAID_EPSILON else 0.0
 
     @property
     def status(self) -> str:
@@ -165,6 +180,79 @@ def paid_transitions(
 
 
 # --------------------------------------------------------------------------- #
+# Overpayment credit (pure)
+# --------------------------------------------------------------------------- #
+def transfer_targets(invoices: Sequence[Invoice], source: Invoice) -> list[Invoice]:
+    """Invoices that can receive ``source``'s credit (pure: unit-tested).
+
+    Open (not ``"paid"``) invoices in the same currency, oldest first — the
+    oldest debt is the natural default target.
+    """
+    return sorted(
+        (
+            inv
+            for inv in invoices
+            if inv is not source
+            and inv.status != "paid"
+            and inv.currency == source.currency
+        ),
+        key=lambda inv: (inv.date, inv.id),
+    )
+
+
+def transfer_credit(
+    source: Invoice, target: Invoice, amount: float, today: str
+) -> None:
+    """Move ``amount`` of ``source``'s overpayment onto ``target`` (pure).
+
+    Recorded as a linked pair of payments — negative on ``source``, positive on
+    ``target``, each naming the other in ``transfer`` — so the payments stay the
+    single source of truth (no separate credit store) and
+    :func:`undo_last_payment` can remove both legs together. Raises
+    ``ValueError`` unless ``0 < amount <= source.credit`` (within
+    :data:`PAID_EPSILON`).
+    """
+    if amount <= 0 or amount > source.credit + PAID_EPSILON:
+        raise ValueError(
+            f"transfer amount must be between 0 and the credit {source.credit:.2f}"
+        )
+    source.payments.append(
+        Payment(date=today, amount=-amount, note=f"credit to {target.id}",
+                transfer=target.id)
+    )
+    target.payments.append(
+        Payment(date=today, amount=amount, note=f"credit from {source.id}",
+                transfer=source.id)
+    )
+
+
+def undo_last_payment(
+    invoices: Sequence[Invoice], inv: Invoice
+) -> list[tuple[Invoice, Payment]]:
+    """Remove ``inv``'s most recently recorded payment (pure: unit-tested).
+
+    When that payment is one leg of a credit transfer, the matching leg on the
+    counterparty (its *last* payment pointing back at ``inv`` with the opposite
+    amount) is removed too — half a transfer would conjure or destroy money. A
+    counterparty that was deleted or hand-edited is skipped quietly. Returns the
+    ``(invoice, payment)`` pairs removed; empty when ``inv`` has no payments.
+    """
+    if not inv.payments:
+        return []
+    last = inv.payments.pop()
+    removed = [(inv, last)]
+    if last.transfer:
+        other = next((o for o in invoices if o.id == last.transfer and o is not inv), None)
+        if other is not None:
+            for index in range(len(other.payments) - 1, -1, -1):
+                leg = other.payments[index]
+                if leg.transfer == inv.id and abs(leg.amount + last.amount) <= PAID_EPSILON:
+                    removed.append((other, other.payments.pop(index)))
+                    break
+    return removed
+
+
+# --------------------------------------------------------------------------- #
 # Serialization (pure)
 # --------------------------------------------------------------------------- #
 def dumps(invoices: Sequence[Invoice]) -> str:
@@ -191,6 +279,7 @@ def loads(text: str) -> list[Invoice]:
                 date=str(p.get("date", "")),
                 amount=float(p.get("amount", 0)),
                 note=str(p.get("note", "")),
+                transfer=str(p.get("transfer", "")),
             )
             for p in (item.get("payments") or [])
             if isinstance(p, dict)

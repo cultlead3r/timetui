@@ -91,7 +91,7 @@ database?" prompt, which would otherwise hang the TUI).
 | `c` | continue (resume the highlighted interval now) |
 | `u` | undo the last Time Warrior change |
 | `R` | generate an HTML/PDF report of the selection (or the filtered view), optionally recording it as an invoice |
-| `I` | invoice ledger: amounts, payments, balances (`p` = record payment, `u` = undo last payment, `x` = delete) |
+| `I` | invoice ledger: amounts, payments, balances (`p` = record payment, `u` = undo last payment, `t` = transfer an overpayment's credit, `x` = delete) |
 | `w` | wrap annotations (multi-line rows) |
 | `f` | toggle the sidebar (full-width table) |
 | `C` | show / hide table columns (ID hidden by default) |
@@ -260,6 +260,13 @@ table always shows which work is unbilled, awaiting money, or settled:
    the ledger link). A refund (negative payment) that reopens the balance swaps
    the tags back. So filtering `invoiced` = billed & outstanding, `paid` =
    settled — no manual retagging.
+5. **Overpaid?** The invoice stays `paid` but shows as `paid +credit`, and the
+   `Σ` line gains a `credit` total. Press `t` on it to apply the surplus to an
+   open invoice (same currency, oldest first; the amount pre-fills with what
+   that invoice can absorb). The transfer is recorded as a linked pair of
+   payments — `credit to X` on the overpaid invoice, `credit from Y` on the
+   other — so it settles/retags the receiving invoice like any payment, and `u`
+   on either side undoes both halves together.
 
 **Invoice IDs** follow `{Client}-{year}-{seq}` (e.g. `LA-2026-003`): the client
 prefix is the tag shared by every interval in the report (workflow tags like

@@ -287,3 +287,123 @@ def test_resolve_ledger_dir_legacy_default():
 def test_resolve_ledger_dir_xdg_default():
     got = invoices.resolve_ledger_dir(None, None, HOME, False)
     assert got == HOME / ".local" / "share" / "timewarrior"
+
+
+# --------------------------------------------------------------------------- #
+# Overpayment credit: transfer + linked undo
+# --------------------------------------------------------------------------- #
+def overpaid(**overrides) -> Invoice:
+    """LA-2026-001 ($1300) paid $1500 -> $200 credit."""
+    overrides.setdefault("payments", [Payment(date="2026-07-12", amount=1500.0)])
+    return make_invoice(**overrides)
+
+
+def test_credit_is_the_overpaid_surplus():
+    assert overpaid().credit == 200.0
+    assert make_invoice().credit == 0.0  # unpaid
+    exact = make_invoice(payments=[Payment(date="2026-07-12", amount=1300.0)])
+    assert exact.credit == 0.0
+
+
+def test_credit_ignores_float_dust():
+    inv = make_invoice(payments=[Payment(date="2026-07-12", amount=1300.004)])
+    assert inv.credit == 0.0
+    assert inv.status == "paid"
+
+
+def test_transfer_targets_open_same_currency_oldest_first():
+    source = overpaid()
+    newer = make_invoice(id="LA-2026-003", date="2026-08-01")
+    older = make_invoice(id="LA-2026-002", date="2026-07-20",
+                         payments=[Payment(date="2026-07-25", amount=100.0)])
+    settled = make_invoice(id="LA-2026-004", date="2026-07-01",
+                           payments=[Payment(date="2026-07-02", amount=1300.0)])
+    euro = make_invoice(id="B-2026-001", date="2026-06-01", currency="EUR")
+    ledger = [newer, source, settled, euro, older]
+    assert invoices.transfer_targets(ledger, source) == [older, newer]
+
+
+def test_transfer_credit_records_linked_pair():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=500.0)
+    invoices.transfer_credit(source, target, 200.0, "2026-07-20")
+    assert source.payments[-1] == Payment(
+        date="2026-07-20", amount=-200.0, note="credit to LA-2026-002",
+        transfer="LA-2026-002",
+    )
+    assert target.payments == [Payment(
+        date="2026-07-20", amount=200.0, note="credit from LA-2026-001",
+        transfer="LA-2026-001",
+    )]
+    assert source.credit == 0.0
+    assert source.status == "paid"  # never reopened by giving its surplus away
+    assert target.balance == 300.0
+    assert target.status == "partial"
+
+
+def test_transfer_credit_partial_keeps_the_rest():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=50.0)
+    invoices.transfer_credit(source, target, 50.0, "2026-07-20")
+    assert source.credit == 150.0
+    assert target.status == "paid"
+
+
+@pytest.mark.parametrize("amount", [0.0, -5.0, 200.01])
+def test_transfer_credit_rejects_amount_outside_credit(amount):
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002")
+    with pytest.raises(ValueError):
+        invoices.transfer_credit(source, target, amount, "2026-07-20")
+    assert len(source.payments) == 1  # nothing half-recorded
+    assert target.payments == []
+
+
+def test_undo_last_payment_plain():
+    inv = overpaid()
+    removed = invoices.undo_last_payment([inv], inv)
+    assert [(i.id, p.amount) for i, p in removed] == [("LA-2026-001", 1500.0)]
+    assert inv.payments == []
+    assert invoices.undo_last_payment([inv], inv) == []
+
+
+def test_undo_last_payment_removes_both_transfer_legs():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=500.0)
+    invoices.transfer_credit(source, target, 200.0, "2026-07-20")
+    # a later ordinary payment on the target must survive the linked undo
+    target.payments.append(Payment(date="2026-07-25", amount=300.0))
+    removed = invoices.undo_last_payment([source, target], source)
+    assert [(i.id, p.amount) for i, p in removed] == [
+        ("LA-2026-001", -200.0), ("LA-2026-002", 200.0),
+    ]
+    assert source.credit == 200.0
+    assert [p.amount for p in target.payments] == [300.0]
+
+
+def test_undo_last_payment_from_the_receiving_side():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=500.0)
+    invoices.transfer_credit(source, target, 200.0, "2026-07-20")
+    invoices.undo_last_payment([source, target], target)
+    assert target.payments == []
+    assert source.credit == 200.0
+
+
+def test_undo_last_payment_missing_counterparty_only_pops():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=500.0)
+    invoices.transfer_credit(source, target, 200.0, "2026-07-20")
+    removed = invoices.undo_last_payment([source], source)  # target deleted
+    assert len(removed) == 1
+    assert source.credit == 200.0
+
+
+def test_transfer_roundtrips_and_legacy_payments_load_without_it():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002", amount=500.0)
+    invoices.transfer_credit(source, target, 200.0, "2026-07-20")
+    assert invoices.loads(invoices.dumps([source, target])) == [source, target]
+    legacy = ('{"invoices": [{"id": "LA-2026-001", "amount": 100, '
+              '"payments": [{"date": "2026-07-12", "amount": 100}]}]}')
+    assert invoices.loads(legacy)[0].payments[0].transfer == ""

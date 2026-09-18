@@ -83,6 +83,12 @@ Never add a test that shells out to real `timew`.
   `paid_transitions(before, after)` and applied by `app._sync_paid_tags`, which finds intervals
   **by the invoice-ID tag** (never stale @ids) and swaps `invoiced`<->`paid` per invoice (two
   atomic tag-only calls). Same ordering rule: ledger save first, retag after.
+- Overpayment credit has **no separate store**: `Invoice.credit` is derived (negative balance
+  beyond `PAID_EPSILON`) and `status` stays three-valued — an overpaid invoice is still `"paid"`,
+  so `paid_transitions` never sees a fourth state. `t` in the ledger calls the pure
+  `transfer_credit`, which records a linked payment pair (negative on the source, positive on the
+  target, each naming the other in the optional `Payment.transfer`); `undo_last_payment` removes
+  both legs together. The target settling goes through the normal `paid_transitions` path.
 - The report-dialog snapshot embeds a suggested ID containing the current year — tests pin
   `app._today` (module-level helper) for determinism; don't call `date.today()` directly in
   `app.py`.
