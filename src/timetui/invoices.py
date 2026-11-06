@@ -28,6 +28,11 @@ swaps ``invoiced`` for ``paid`` (a refund that reopens the balance swaps back
 
 An overpayment leaves a derived :attr:`Invoice.credit` (no separate store);
 :func:`transfer_credit` applies it to another invoice as a linked payment pair.
+
+Money in the ledger is whole cents (``models.to_cents``): invoice and payment
+amounts are rounded when constructed, and the derived ``paid`` / ``balance``
+are rounded too, so stored amounts round the way the invoice prints them and
+float dust never shows up as ``-$0.00``.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-from .models import COST_PREFIX, EXPENSE_TAG
+from .models import COST_PREFIX, EXPENSE_TAG, to_cents
 
 # Tags that mark workflow state (new -> invoiced -> paid), not a client —
 # never a client prefix candidate. The expense marker is workflow-like too:
@@ -62,6 +67,9 @@ class Payment:
     # (see :func:`transfer_credit`); "" for an ordinary payment.
     transfer: str = ""
 
+    def __post_init__(self) -> None:
+        self.amount = to_cents(self.amount)
+
 
 @dataclass
 class Invoice:
@@ -69,7 +77,8 @@ class Invoice:
 
     ``id`` (e.g. ``LA-2026-003``) is also the timew tag stamped on the covered
     intervals. ``amount`` is the snapshot taken when the invoice was recorded —
-    it does not drift if the intervals are edited later.
+    it does not drift if the intervals are edited later — rounded to the cents
+    the printed invoice shows (``hours`` and ``rate`` are kept unrounded).
     """
 
     id: str
@@ -80,13 +89,16 @@ class Invoice:
     currency: str = "USD"
     payments: list[Payment] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.amount = to_cents(self.amount)
+
     @property
     def paid(self) -> float:
-        return sum(p.amount for p in self.payments)
+        return to_cents(sum(p.amount for p in self.payments))
 
     @property
     def balance(self) -> float:
-        return self.amount - self.paid
+        return to_cents(self.amount - self.paid)
 
     @property
     def credit(self) -> float:
@@ -208,10 +220,11 @@ def transfer_credit(
     Recorded as a linked pair of payments — negative on ``source``, positive on
     ``target``, each naming the other in ``transfer`` — so the payments stay the
     single source of truth (no separate credit store) and
-    :func:`undo_last_payment` can remove both legs together. Raises
-    ``ValueError`` unless ``0 < amount <= source.credit`` (within
-    :data:`PAID_EPSILON`).
+    :func:`undo_last_payment` can remove both legs together. ``amount`` is
+    rounded to cents first; raises ``ValueError`` unless
+    ``0 < amount <= source.credit`` (within :data:`PAID_EPSILON`).
     """
+    amount = to_cents(amount)
     if amount <= 0 or amount > source.credit + PAID_EPSILON:
         raise ValueError(
             f"transfer amount must be between 0 and the credit {source.credit:.2f}"

@@ -89,6 +89,13 @@ Never add a test that shells out to real `timew`.
   `transfer_credit`, which records a linked payment pair (negative on the source, positive on the
   target, each naming the other in the optional `Payment.transfer`); `undo_last_payment` removes
   both legs together. The target settling goes through the normal `paid_transitions` path.
+- Ledger money is **whole cents**: `Invoice`/`Payment` `__post_init__` round `amount` with the
+  pure `models.to_cents` (also on `loads`, so old sub-cent ledgers normalize), and
+  `paid`/`balance` (and the ledger Σ line) round their sums. `to_cents` adds `0.0` so float
+  dust never formats as `-$0.00`. Every typed amount (payment, transfer, expense) goes through
+  the pure `models.parse_amount`, which rejects `nan`/`inf` and rounds *before* the screen
+  validates (a `0.004` entry is zero, not valid); `transfer_credit` rounds first too.
+  `hours`/`rate` stay unrounded.
 - The report-dialog snapshot embeds a suggested ID containing the current year — tests pin
   `app._today` (module-level helper) for determinism; don't call `date.today()` directly in
   `app.py`.

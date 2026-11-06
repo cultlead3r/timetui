@@ -7,6 +7,7 @@ the real Time Warrior database, which tests must never read or write (see
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 
 from timetui import invoices
 from timetui.invoices import Invoice, Payment
+from timetui.models import format_amount, parse_amount, to_cents
 
 
 def make_invoice(**overrides) -> Invoice:
@@ -74,6 +76,87 @@ def test_negative_payment_refund_reopens_balance():
 
 def test_zero_amount_invoice_is_paid():
     assert make_invoice(amount=0.0).status == "paid"
+
+
+# --------------------------------------------------------------------------- #
+# Whole-cent money
+# --------------------------------------------------------------------------- #
+def is_negative_zero(x: float) -> bool:
+    return x == 0 and math.copysign(1.0, x) < 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "cents"),
+    [(2342.6666666666665, 2342.67), (7427.277777777777, 7427.28),
+     (-51.1333, -51.13), (100.0, 100.0), (0.0, 0.0)],
+)
+def test_to_cents_rounds_like_the_display(raw, cents):
+    assert to_cents(raw) == cents
+    assert f"{to_cents(raw):,.2f}" == f"{raw:,.2f}"
+
+
+@pytest.mark.parametrize("raw", [-0.0, -0.003, -1e-13])
+def test_to_cents_never_returns_negative_zero(raw):
+    assert not is_negative_zero(to_cents(raw))
+
+
+@pytest.mark.parametrize(
+    ("raw", "amount"),
+    [("450", 450.0), (" $1,250.004 ", 1250.0), ("-50.125", -50.12),
+     ("0.004", 0.0), ("-0.003", 0.0)],
+)
+def test_parse_amount_strips_dollar_commas_and_rounds(raw, amount):
+    parsed = parse_amount(raw)
+    assert parsed == amount and not is_negative_zero(parsed)
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "nan", "inf", "-inf", "1e400"])
+def test_parse_amount_rejects_non_money(raw):
+    with pytest.raises(ValueError):
+        parse_amount(raw)
+
+
+def test_invoice_and_payment_amounts_are_stored_in_cents():
+    inv = make_invoice(amount=2342.6666666666665,
+                       payments=[Payment(date="2026-07-12", amount=901.2849)])
+    assert inv.amount == 2342.67
+    assert inv.payments[0].amount == 901.28
+    assert inv.hours == 6.5 and inv.rate == 200.0  # only money is rounded
+
+
+def test_transferred_out_overpayment_settles_at_plus_zero():
+    # The reported case: an hours × rate amount with a fraction of a cent,
+    # overpaid, its whole (cent-rounded) credit moved on — showed "-$0.00".
+    source = make_invoice(amount=2342.6666666666665, payments=[
+        Payment(date="2026-10-01", amount=901.28),
+        Payment(date="2026-10-08", amount=644.6),
+        Payment(date="2026-10-15", amount=847.92),
+    ])
+    target = make_invoice(id="LA-2026-004", amount=7427.277777777777)
+    assert source.credit == 51.13
+    invoices.transfer_credit(source, target, source.credit, "2026-11-01")
+    assert source.balance == 0.0 and not is_negative_zero(source.balance)
+    assert format_amount(source.balance) == "$0.00"
+    assert source.credit == 0.0
+    assert source.status == "paid"
+    assert target.balance == 7376.15
+
+
+def test_cent_float_dust_never_shows_negative_zero():
+    # Whole-cent amounts still sum with float dust (0.1 + 0.2 != 0.3).
+    inv = make_invoice(amount=0.3, payments=[
+        Payment(date="2026-07-12", amount=0.1),
+        Payment(date="2026-07-13", amount=0.2),
+    ])
+    assert inv.paid == 0.3
+    assert format_amount(inv.balance) == "$0.00"
+    refunded = make_invoice(amount=0.0, payments=[
+        Payment(date="2026-07-12", amount=0.1),
+        Payment(date="2026-07-12", amount=0.2),
+        Payment(date="2026-07-13", amount=-0.3, note="refund"),
+    ])
+    assert format_amount(refunded.paid) == "$0.00"
+    assert format_amount(refunded.balance) == "$0.00"
 
 
 # --------------------------------------------------------------------------- #
@@ -232,6 +315,18 @@ def test_loads_skips_bad_entries():
     assert ledger[0].currency == "USD"
 
 
+def test_loads_rounds_legacy_sub_cent_amounts():
+    # Ledgers written before amounts were rounded hold raw hours × rate.
+    text = (
+        '{"invoices": [{"id": "LA-2026-003", "amount": 2342.6666666666665, '
+        '"payments": [{"date": "2026-11-01", "amount": -51.13, '
+        '"transfer": "LA-2026-004"}]}]}'
+    )
+    [inv] = invoices.loads(text)
+    assert inv.amount == 2342.67
+    assert '"amount": 2342.67,' in invoices.dumps([inv])
+
+
 def test_loads_non_object_root_is_empty():
     assert invoices.loads("[1, 2]") == []
 
@@ -356,6 +451,22 @@ def test_transfer_credit_rejects_amount_outside_credit(amount):
     with pytest.raises(ValueError):
         invoices.transfer_credit(source, target, amount, "2026-07-20")
     assert len(source.payments) == 1  # nothing half-recorded
+    assert target.payments == []
+
+
+def test_transfer_credit_rounds_amount_to_cents():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002")
+    invoices.transfer_credit(source, target, 50.004, "2026-07-20")
+    assert source.payments[-1].amount == -50.0
+    assert target.payments[-1].amount == 50.0
+
+
+def test_transfer_credit_rejects_amount_that_rounds_to_zero():
+    source = overpaid()
+    target = make_invoice(id="LA-2026-002")
+    with pytest.raises(ValueError):
+        invoices.transfer_credit(source, target, 0.004, "2026-07-20")
     assert target.payments == []
 
 

@@ -27,7 +27,7 @@ from textual.widgets import (
 
 from . import invoices as ledger
 from .invoices import Invoice, Payment
-from .models import Interval, format_amount
+from .models import Interval, format_amount, parse_amount, to_cents
 
 LOCAL_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
@@ -309,19 +309,13 @@ class ExpenseScreen(ModalScreen[dict | None]):
         except ValueError:
             err.update("Bad date (use YYYY-MM-DD)")
             return
-        raw = (
-            self.query_one("#amount-input", Input)
-            .value.strip()
-            .lstrip("$")
-            .replace(",", "")
-        )
         try:
-            amount = float(raw)
+            amount = parse_amount(self.query_one("#amount-input", Input).value)
         except ValueError:
             err.update("Amount must be a number")
             return
         if amount <= 0:
-            err.update("Amount must be greater than zero")
+            err.update("Amount must be at least $0.01")
             return
         self.dismiss(
             {
@@ -781,19 +775,13 @@ class PaymentScreen(ModalScreen["dict | None"]):
 
     def action_save(self) -> None:
         err = self.query_one("#error", Static)
-        raw = (
-            self.query_one("#amount-input", Input)
-            .value.strip()
-            .lstrip("$")
-            .replace(",", "")
-        )
         try:
-            amount = float(raw)
+            amount = parse_amount(self.query_one("#amount-input", Input).value)
         except ValueError:
             err.update("Payment amount must be a number")
             return
         if amount == 0:
-            err.update("Payment amount must not be zero")
+            err.update("Payment amount must not be $0.00")
             return
         date_raw = self.query_one("#date-input", Input).value.strip()
         if not date_raw:
@@ -896,14 +884,8 @@ class TransferScreen(ModalScreen["dict | None"]):
         if index is None:
             err.update("Pick an invoice to apply the credit to")
             return
-        raw = (
-            self.query_one("#amount-input", Input)
-            .value.strip()
-            .lstrip("$")
-            .replace(",", "")
-        )
         try:
-            amount = float(raw)
+            amount = parse_amount(self.query_one("#amount-input", Input).value)
         except ValueError:
             err.update("Transfer amount must be a number")
             return
@@ -1031,10 +1013,12 @@ class InvoicesScreen(ModalScreen[bool]):
         return None
 
     def _update_summary(self) -> None:
-        invoiced = sum(inv.amount for inv in self._invoices)
-        paid = sum(inv.paid for inv in self._invoices)
-        outstanding = sum(inv.balance for inv in self._invoices if inv.status != "paid")
-        credit = sum(inv.credit for inv in self._invoices)
+        invoiced = to_cents(sum(inv.amount for inv in self._invoices))
+        paid = to_cents(sum(inv.paid for inv in self._invoices))
+        outstanding = to_cents(
+            sum(inv.balance for inv in self._invoices if inv.status != "paid")
+        )
+        credit = to_cents(sum(inv.credit for inv in self._invoices))
         summary = (
             f"\u03a3 invoiced [b]{format_amount(invoiced)}[/b]"
             f"    paid [green]{format_amount(paid)}[/green]"

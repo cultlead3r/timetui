@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
@@ -53,6 +54,31 @@ def billing_amount(td: timedelta, rate: float) -> float:
 def format_amount(amount: float) -> str:
     """Format a billing amount as dollars, like '$1,234.00' (thousands-separated)."""
     return f"${amount:,.2f}"
+
+
+def to_cents(amount: float) -> float:
+    """``amount`` rounded to whole cents, never negative zero (pure: unit-tested).
+
+    ``round`` and the ``:.2f`` display both round the exact binary value, so a
+    rounded amount always shows the same cents as the raw one did. Adding
+    ``0.0`` turns ``-0.0`` (e.g. ``round(-0.003, 2)``) into ``0.0``, which
+    would otherwise format as ``-$0.00``.
+    """
+    return round(amount, 2) + 0.0
+
+
+def parse_amount(raw: str) -> float:
+    """A typed money amount, rounded to cents (pure: unit-tested).
+
+    Accepts a leading ``$`` and thousands separators (``$1,250.004`` ->
+    ``1250.0``). Raises ``ValueError`` for anything that is not a finite
+    number (``nan``/``inf`` parse as floats but are not money). Rounding
+    happens *before* callers validate, so a sub-cent entry is zero.
+    """
+    amount = float(raw.strip().lstrip("$").replace(",", ""))
+    if not math.isfinite(amount):
+        raise ValueError(f"not a finite amount: {raw!r}")
+    return to_cents(amount)
 
 
 def expense_amount(tags: Iterable[str]) -> float | None:

@@ -1001,6 +1001,68 @@ def _credit_setup(monkeypatch, interval_tags, ledger):
     return path, calls
 
 
+@pytest.mark.parametrize(
+    ("amount", "message"),
+    [("nan", "must be a number"), ("inf", "must be a number"),
+     ("0.004", "must not be $0.00")],
+)
+def test_payment_screen_rejects_non_money(monkeypatch, amount, message):
+    """NaN/inf are not money, and a sub-cent payment rounds to $0.00: the
+    payment dialog stays open and nothing reaches the ledger."""
+    path, calls = _credit_setup(
+        monkeypatch,
+        ["LA", "invoiced", "LA-2026-001"],
+        [Invoice(id="LA-2026-001", date="2026-03-01", hours=2.5, rate=200.0,
+                 amount=500.0)],
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("I")
+            await _wait_for_screen(pilot, app, InvoicesScreen)
+            await pilot.press("p")
+            await _wait_for_screen(pilot, app, PaymentScreen)
+            screen = app.screen
+            screen.query_one("#amount-input", Input).value = amount
+            screen.action_save()
+            await pilot.pause()
+            assert isinstance(app.screen, PaymentScreen)  # not dismissed
+            assert message in str(screen.query_one("#error", Static).content)
+        assert invoices.load_ledger(path)[0].payments == []
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("amount", ["nan", "0.004"])
+def test_expense_screen_rejects_non_money(fixed_intervals, monkeypatch, amount):
+    """A sub-cent expense would write `cost:0.00`, which is not an expense and
+    bills the synthetic minute as time; NaN is not money. Neither is saved."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        timew, "execute", lambda args, **kw: calls.append(list(args)) or ""
+    )
+
+    async def scenario() -> None:
+        app = SnapApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("E")
+            await _wait_for_screen(pilot, app, ExpenseScreen)
+            screen = app.screen
+            screen.query_one("#date-input", Input).value = "2026-03-10"
+            screen.query_one("#amount-input", Input).value = amount
+            screen.action_save()
+            await pilot.pause()
+            assert isinstance(app.screen, ExpenseScreen)  # not dismissed
+            assert str(screen.query_one("#error", Static).content)
+        assert calls == []
+
+    asyncio.run(scenario())
+
+
 def test_transfer_credit_settles_target_and_retags(monkeypatch):
     """I -> t -> Enter moves the newest (overpaid) invoice's $200 credit onto
     the open one; settling it retags its intervals invoiced -> paid."""
