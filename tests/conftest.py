@@ -16,13 +16,26 @@ The invoice ledger gets the same isolation: ``invoices.ledger_path`` normally
 resolves next to the real Time Warrior db, and the report dialog reads the
 ledger on every ``R`` press — so every test gets a fresh temp ledger path.
 Tests that need ledger contents write them via ``invoices.save_ledger``.
+
+Local time is pinned to ``America/Chicago`` for the whole run: the app renders
+local time, and the snapshot baselines in ``tests/__snapshots__`` were recorded
+at -05:00, so on a machine in any other zone every snapshot would fail. It is
+set at import (before pytest imports any test module), so module-level
+fixtures see it too. Re-record snapshots under this pin, never a local zone.
 """
 
 from __future__ import annotations
 
+import os
+import time
+
 import pytest
 
 from timetui import invoices
+
+os.environ["TZ"] = "America/Chicago"
+if hasattr(time, "tzset"):  # POSIX only; Windows ignores TZ for local time
+    time.tzset()
 
 
 @pytest.fixture(autouse=True)

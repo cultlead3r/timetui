@@ -118,3 +118,5 @@ Never add a test that shells out to real `timew`.
 - Uses `pytest-textual-snapshot`; snapshots live in `tests/__snapshots__/test_app/*.raw`.
 - `SnapApp` sets `SHOW_CLOCK = False` and fixtures use only completed intervals, so
   durations/totals are deterministic. Keep new snapshot fixtures clock-free.
+- `tests/conftest.py` pins `TZ=America/Chicago` at import: baselines were recorded at -05:00
+  and the app renders local time. Don't remove it or `--snapshot-update` under another zone.
